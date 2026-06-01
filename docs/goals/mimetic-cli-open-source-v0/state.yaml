@@ -10,11 +10,11 @@ tasks:
     issue: "https://github.com/danielgwilson/mimetic-cli/issues/14"
     description: "Implement safe init with committed mimetic/ and ignored .mimetic/."
   - id: dry-run-bundle
-    status: pending
+    status: completed
     issue: "https://github.com/danielgwilson/mimetic-cli/issues/7"
     description: "Generate synthetic dry-run bundle and history pointer."
   - id: verify-review
-    status: pending
+    status: completed
     issue: "https://github.com/danielgwilson/mimetic-cli/issues/7"
     description: "Validate bundle and build first review packet."
   - id: observer
@@ -66,9 +66,20 @@ receipts:
       - "pnpm test"
       - "pnpm check"
       - "pnpm mimetic -- init --dry-run --json --cwd fixtures/minimal-app"
+  - id: dry-run-bundle-2026-06-01
+    task: dry-run-bundle
+    issue: "https://github.com/danielgwilson/mimetic-cli/issues/7"
+    branch: dry-run-bundle
+    summary: "Implemented synthetic dry-run run bundle generation, latest pointer, review skeleton, runs listing, doctor readout, and verify/review readers."
+    proof_commands:
+      - "pnpm check"
+      - "pnpm mimetic -- run --dry-run --json --cwd <fixture-copy>"
+      - "pnpm mimetic -- verify --run latest --json --cwd <fixture-copy>"
+      - "pnpm mimetic -- review --run latest --json --cwd <fixture-copy>"
+      - "pnpm mimetic -- runs --json --cwd <fixture-copy>"
 verification:
   status: partial
-  last_command: "pnpm mimetic -- init --dry-run --json --cwd fixtures/minimal-app"
-  last_artifact: "fixtures/minimal-app and fixture-backed init tests"
+  last_command: "pnpm mimetic -- verify --run latest --json --cwd <fixture-copy>"
+  last_artifact: "synthetic .mimetic/runs/<run-id>/run.json, review.json, review.md, and latest.json in temp fixture copy"
 completion_audit:
   status: pending
