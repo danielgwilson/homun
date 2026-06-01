@@ -6,7 +6,7 @@ tasks:
     issue: "https://github.com/danielgwilson/mimetic-cli/issues/13"
     description: "Add npm package scaffold, commander CLI, tests, and check scripts."
   - id: init-layout
-    status: pending
+    status: completed
     issue: "https://github.com/danielgwilson/mimetic-cli/issues/14"
     description: "Implement safe init with committed mimetic/ and ignored .mimetic/."
   - id: dry-run-bundle
@@ -47,9 +47,19 @@ receipts:
       - "pnpm install"
       - "pnpm check"
       - "pnpm mimetic -- --help"
+  - id: init-layout-2026-06-01
+    task: init-layout
+    issue: "https://github.com/danielgwilson/mimetic-cli/issues/14"
+    branch: init-layout
+    summary: "Implemented safe mimetic init with dry-run planning, yes-gated writes, committed mimetic/ starter files, ignored .mimetic/ runtime dirs, .gitignore/package.json patching, structured failures, and fixture tests."
+    proof_commands:
+      - "pnpm test"
+      - "pnpm check"
+      - "pnpm mimetic -- init --dry-run --json"
+      - "temporary fixture: pnpm mimetic -- init --yes --json --cwd <fixture>"
 verification:
   status: partial
-  last_command: "pnpm mimetic -- --help"
-  last_artifact: "package scaffold command output"
+  last_command: "temporary fixture: pnpm mimetic -- init --yes --json --cwd <fixture>"
+  last_artifact: "generated fixture tree and .gitignore/package.json proof"
 completion_audit:
   status: pending
