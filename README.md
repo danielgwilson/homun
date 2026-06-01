@@ -56,5 +56,6 @@ feedback issue drafts are tracked in the roadmap and GitHub issue queue.
 
 ## Status
 
-Package scaffold in progress. Implementation should start from source
-comparison and contract design, not a from-scratch rewrite.
+Package scaffold and safe `mimetic init` layout work are in progress.
+Implementation should start from source comparison and contract design, not a
+from-scratch rewrite.
