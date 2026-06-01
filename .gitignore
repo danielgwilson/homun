@@ -12,6 +12,7 @@ coverage/
 *.tsbuildinfo
 
 # proof/runtime artifacts
+.mimetic/
 artifacts/proof/
 proof/
 .e2b/

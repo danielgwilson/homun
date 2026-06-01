@@ -1,5 +1,8 @@
 import { Command } from "commander";
 
+import { runInit } from "./init.js";
+import type { InitChange, InitResult } from "./init.js";
+
 export const CLI_RESPONSE_SCHEMA = "mimetic.cli-response.v1";
 
 export interface CliIo {
@@ -172,7 +175,9 @@ export function createProgram(io: Partial<CliIo> = {}): Command {
       ].join("\n")
     );
 
-  for (const plannedCommand of plannedCommands) {
+  registerInitCommand(program, cliIo);
+
+  for (const plannedCommand of plannedCommands.filter((command) => command.name !== "init")) {
     registerUnsupportedCommand(program, plannedCommand, cliIo);
   }
 
@@ -188,6 +193,65 @@ export function createProgram(io: Partial<CliIo> = {}): Command {
   }
 
   return program;
+}
+
+function registerInitCommand(parent: Command, io: CliIo): void {
+  parent
+    .command("init")
+    .description("Set up committed mimetic/ source files and ignored .mimetic/ runtime state.")
+    .option("--dry-run", "Print planned changes without writing files.")
+    .option("--yes", "Apply safe generated changes without prompting.")
+    .option("--cwd <path>", "Target project directory.", ".")
+    .option("--json", "Print a machine-readable JSON response.")
+    .action(async (options: { cwd: string; dryRun?: boolean; json?: boolean; yes?: boolean }, command) => {
+      const initOptions = {
+        cwd: options.cwd,
+        ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
+        ...(options.yes === undefined ? {} : { yes: options.yes })
+      };
+      const result = await runInit(initOptions);
+
+      if (wantsJson(command)) {
+        io.writeOut(`${JSON.stringify(result, null, 2)}\n`);
+      } else if (result.ok) {
+        io.writeOut(formatInitHuman(result));
+      } else {
+        io.writeErr(formatInitHuman(result));
+      }
+
+      io.setExitCode(result.ok ? 0 : 2);
+    });
+}
+
+function formatInitHuman(result: InitResult): string {
+  const title = result.ok
+    ? `mimetic init ${result.mode}`
+    : `mimetic init ${result.mode} blocked`;
+  const lines = [
+    title,
+    `cwd: ${result.cwd}`,
+    "",
+    "changes:",
+    ...result.changes.map(formatInitChange)
+  ];
+
+  if (result.warnings.length > 0) {
+    lines.push("", "warnings:", ...result.warnings.map((warning) => `- ${warning}`));
+  }
+
+  if (result.error) {
+    lines.push("", `${result.error.code}: ${result.error.message}`);
+  }
+
+  if (result.mode === "needs-confirmation") {
+    lines.push("", "Run with --dry-run --json to inspect or --yes to apply.");
+  }
+
+  return `${lines.join("\n")}\n`;
+}
+
+function formatInitChange(change: InitChange): string {
+  return `- ${change.action.padEnd(6)} ${change.path} (${change.target}: ${change.reason})`;
 }
 
 function registerUnsupportedCommand(
