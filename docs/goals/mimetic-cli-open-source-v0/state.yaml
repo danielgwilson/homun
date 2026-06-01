@@ -125,8 +125,35 @@ receipts:
       - "ruby -ryaml -e 'ARGV.each { |f| YAML.load_file(f); puts \"ok #{f}\" }' docs/goals/mimetic-cli-open-source-v0/state.yaml"
       - "rg -n \"(ghp_|gho_|github_pat_|sk-[A-Za-z0-9]|BEGIN (RSA|OPENSSH|PRIVATE)|password\\\\s*=|secret\\\\s*=|token\\\\s*=|api[_-]?key\\\\s*=|patient|PHI|PII|raw private|private screenshot|private transcript|customer data)\" README.md AGENTS.md docs src tests fixtures package.json pnpm-lock.yaml"
 verification:
-  status: partial
-  last_command: "npm pack --dry-run"
-  last_artifact: "docs/release/open-source-readiness.md"
+  status: passed
+  last_command: "final audit: pnpm release:check plus temp fixture dry-run/verify/watch/feedback issue"
+  last_artifact: "docs/goals/mimetic-cli-open-source-v0/state.yaml"
 completion_audit:
-  status: pending
+  status: completed
+  completed_at: "2026-06-01"
+  evidence:
+    - requirement: "npm package scaffold exists"
+      evidence: "package.json, tsconfig*.json, src/cli.ts, src/program.ts, pnpm-lock.yaml; PR #19"
+    - requirement: "mimetic binary uses commander and has useful help"
+      evidence: "src/program.ts createProgram; pnpm mimetic -- --help; tests/program.test.ts"
+    - requirement: "mimetic init can scaffold a target fixture safely"
+      evidence: "src/init.ts, src/init-templates.ts, tests/program.test.ts, tests/fixture.test.ts; PR #20 and PR #21"
+    - requirement: "committed mimetic/ and ignored .mimetic/ layout is implemented"
+      evidence: "init dry-run/apply output, .gitignore, docs/architecture/project-layout.md; PR #20"
+    - requirement: "dry-run bundle is generated from synthetic inputs"
+      evidence: "src/run.ts, tests/run.test.ts, fixtures/minimal-app; PR #22"
+    - requirement: "verify validates the bundle"
+      evidence: "src/run.ts verifyRun, tests/run.test.ts; pnpm mimetic -- verify --run latest --json"
+    - requirement: "observer can render a bundle or documented stub"
+      evidence: "src/observer.ts, tests/observer.test.ts; pnpm mimetic -- watch --run latest --no-open --json; PR #23"
+    - requirement: "feedback issue emits public-safe issue markdown with no GitHub mutation"
+      evidence: "src/feedback.ts, tests/feedback.test.ts, docs/contracts/feedback.md; PR #24"
+    - requirement: "docs and skill guidance explain installation and setup"
+      evidence: "README.md, docs/product/open-source-install-experience.md, docs/skill/mimetic-cli/SKILL.md; PR #25"
+    - requirement: "proof commands pass"
+      evidence: "pnpm check, pnpm release:check, npm pack --dry-run, skill validation, temp fixture CLI walkthrough"
+    - requirement: "no sensitive/private data is committed"
+      evidence: "AGENTS.md public boundary, .gitignore, docs/release/open-source-readiness.md, sensitive scan with only expected policy/ramp matches"
+  remaining_human_gates:
+    - "Daniel must choose the open-source license before actual publication."
+    - "Daniel must explicitly approve removing package.json private:true and running npm publish."
