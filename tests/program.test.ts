@@ -251,11 +251,11 @@ describe("mimetic CLI scaffold", () => {
   });
 
   it("writes human unsupported-command output to stderr", async () => {
-    const result = await runCli(["run", "--dry-run"]);
+    const result = await runCli(["watch", "--run", "latest"]);
 
     expect(result.exitCode).toBe(2);
     expect(result.stdout).toBe("");
-    expect(result.stderr).toContain("mimetic run is planned but not implemented yet.");
+    expect(result.stderr).toContain("mimetic watch is planned but not implemented yet.");
     expect(result.stderr).toContain("does not mutate GitHub");
   });
 });
