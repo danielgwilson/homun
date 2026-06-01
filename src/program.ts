@@ -2,6 +2,19 @@ import { Command } from "commander";
 
 import { runInit } from "./init.js";
 import type { InitChange, InitResult } from "./init.js";
+import {
+  doctor,
+  listRuns,
+  readReview,
+  runDryRun,
+  verifyRun
+} from "./run.js";
+import type {
+  DoctorResult,
+  RunsResult,
+  RunResult,
+  VerifyResult
+} from "./run.js";
 
 export const CLI_RESPONSE_SCHEMA = "mimetic.cli-response.v1";
 
@@ -176,8 +189,14 @@ export function createProgram(io: Partial<CliIo> = {}): Command {
     );
 
   registerInitCommand(program, cliIo);
+  registerDoctorCommand(program, cliIo);
+  registerRunCommand(program, cliIo);
+  registerVerifyCommand(program, cliIo);
+  registerReviewCommand(program, cliIo);
+  registerRunsCommand(program, cliIo);
 
-  for (const plannedCommand of plannedCommands.filter((command) => command.name !== "init")) {
+  const implementedCommands = new Set(["init", "doctor", "run", "verify", "review", "runs"]);
+  for (const plannedCommand of plannedCommands.filter((command) => !implementedCommands.has(command.name))) {
     registerUnsupportedCommand(program, plannedCommand, cliIo);
   }
 
@@ -221,6 +240,128 @@ function registerInitCommand(parent: Command, io: CliIo): void {
 
       io.setExitCode(result.ok ? 0 : 2);
     });
+}
+
+function registerDoctorCommand(parent: Command, io: CliIo): void {
+  parent
+    .command("doctor")
+    .description("Explain project readiness and missing Mimetic setup.")
+    .option("--cwd <path>", "Target project directory.", ".")
+    .option("--json", "Print a machine-readable JSON response.")
+    .action(async (options: { cwd: string; json?: boolean }, command) => {
+      const result = await doctor(options.cwd);
+      writeResult(command, io, result, formatDoctorHuman);
+      io.setExitCode(result.ok ? 0 : 1);
+    });
+}
+
+function registerRunCommand(parent: Command, io: CliIo): void {
+  parent
+    .command("run")
+    .description("Run a persona/scenario simulation or synthetic dry-run bundle.")
+    .option("--dry-run", "Generate contract proof without browser, keys, or provider spend.")
+    .option("--cwd <path>", "Target project directory.", ".")
+    .option("--run-id <id>", "Explicit run id for deterministic fixture tests.")
+    .option("--json", "Print a machine-readable JSON response.")
+    .action(async (options: { cwd: string; dryRun?: boolean; json?: boolean; runId?: string }, command) => {
+      const result = await runDryRun({
+        cwd: options.cwd,
+        ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
+        ...(options.runId === undefined ? {} : { runId: options.runId })
+      });
+      writeResult(command, io, result, formatRunHuman);
+      io.setExitCode(result.ok ? 0 : 2);
+    });
+}
+
+function registerVerifyCommand(parent: Command, io: CliIo): void {
+  parent
+    .command("verify")
+    .description("Validate a run bundle and public-safety gates.")
+    .option("--run <id>", "Run id or latest pointer.", "latest")
+    .option("--cwd <path>", "Target project directory.", ".")
+    .option("--json", "Print a machine-readable JSON response.")
+    .action(async (options: { cwd: string; json?: boolean; run: string }, command) => {
+      const result = await verifyRun(options.cwd, options.run);
+      writeResult(command, io, result, formatVerifyHuman);
+      io.setExitCode(result.ok ? 0 : 2);
+    });
+}
+
+function registerReviewCommand(parent: Command, io: CliIo): void {
+  parent
+    .command("review")
+    .description("Build a review packet from verified run evidence.")
+    .option("--run <id>", "Run id or latest pointer.", "latest")
+    .option("--cwd <path>", "Target project directory.", ".")
+    .option("--json", "Print a machine-readable JSON response.")
+    .action(async (options: { cwd: string; json?: boolean; run: string }, command) => {
+      const result = await readReview(options.cwd, options.run);
+      writeResult(command, io, result, (value) => `${JSON.stringify(value, null, 2)}\n`);
+      io.setExitCode("ok" in result && result.ok === false ? 2 : 0);
+    });
+}
+
+function registerRunsCommand(parent: Command, io: CliIo): void {
+  parent
+    .command("runs")
+    .description("List local Mimetic runs and latest pointers.")
+    .option("--cwd <path>", "Target project directory.", ".")
+    .option("--json", "Print a machine-readable JSON response.")
+    .action(async (options: { cwd: string; json?: boolean }, command) => {
+      const result = await listRuns(options.cwd);
+      writeResult(command, io, result, formatRunsHuman);
+      io.setExitCode(0);
+    });
+}
+
+function writeResult<T>(command: Command, io: CliIo, result: T, formatHuman: (result: T) => string): void {
+  if (wantsJson(command)) {
+    io.writeOut(`${JSON.stringify(result, null, 2)}\n`);
+  } else {
+    io.writeOut(formatHuman(result));
+  }
+}
+
+function formatDoctorHuman(result: DoctorResult): string {
+  return [
+    `mimetic doctor ${result.ok ? "ok" : "needs setup"}`,
+    `cwd: ${result.cwd}`,
+    ...result.checks.map((check) => `- ${check.ok ? "ok" : "missing"} ${check.name}: ${check.message}`)
+  ].join("\n") + "\n";
+}
+
+function formatRunHuman(result: RunResult): string {
+  if (!result.ok) {
+    return `${result.error?.code}: ${result.error?.message}\n`;
+  }
+
+  return [
+    `mimetic run ${result.mode}`,
+    `run: ${result.runId}`,
+    `bundle: ${result.bundlePath}`,
+    `review: ${result.reviewPath}`,
+    ...result.warnings.map((warning) => `warning: ${warning}`)
+  ].join("\n") + "\n";
+}
+
+function formatVerifyHuman(result: VerifyResult): string {
+  return [
+    `mimetic verify ${result.ok ? "passed" : "failed"}`,
+    `run: ${result.run}`,
+    ...result.checks.map((check) => `- ${check.ok ? "ok" : "fail"} ${check.name}: ${check.message}`)
+  ].join("\n") + "\n";
+}
+
+function formatRunsHuman(result: RunsResult): string {
+  if (result.runs.length === 0) {
+    return `No Mimetic runs found in ${result.cwd}\n`;
+  }
+
+  return [
+    `latest: ${result.latest ?? "none"}`,
+    ...result.runs.map((run) => `- ${run.runId} ${run.mode ?? "unknown"} ${run.createdAt ?? "unknown"} ${run.path}`)
+  ].join("\n") + "\n";
 }
 
 function formatInitHuman(result: InitResult): string {
