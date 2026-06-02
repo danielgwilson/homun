@@ -32,8 +32,10 @@ const secretPatterns = [
 const privateResiduePatterns = [
   ["absolute_local_user_path", /\/Users\/[A-Za-z0-9._-]+\//g],
   ["local_git_path", /\blocal_git\b/g],
-  ["private_source_name", /\b(?:multi-app harness|web-app harness|private organization|external vendor)\b/g],
-  ["private_source_phrase", /\bterminal/product harness\b/g]
+  ...((process.env.MIMETIC_PUBLIC_DENYLIST_PATTERN ?? "")
+    .split("\n")
+    .map((pattern, index) => pattern.trim() ? [`custom_private_residue_${index + 1}`, new RegExp(pattern, "g")] : null)
+    .filter(Boolean))
 ];
 
 function trackedFiles() {
