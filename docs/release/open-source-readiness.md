@@ -2,14 +2,14 @@
 
 Date: 2026-06-02
 
-Status: public package candidate. Actual `npm publish` remains a human release
-action and must not be run by an agent without explicit approval in the current
-context.
+Status: public repository candidate after reviewed history cleanup. Actual
+`npm publish` remains a human release action and must not be run by an agent
+without explicit approval in the current context.
 
 ## Package State
 
 - Package name: `mimetic-cli`
-- Version: `0.1.2`
+- Version: `0.1.3`
 - Binary: `mimetic`
 - License: MIT
 - Repository: `https://github.com/danielgwilson/mimetic-cli`
@@ -60,17 +60,20 @@ Allowed examples are synthetic or redacted only.
 
 ## GitHub Visibility Gate
 
-The current tree is the public surface being hardened here. Existing Git
-history still contains internal ramp/source-context commits from before this
-cleanup. Do not make the existing repository public with full history until one
-of these is done:
+The current tree and reachable Git history are the public surface being
+hardened here. The repository must not be made public until these checks pass
+from a fresh clone:
 
-- create a fresh public repository from a clean `git archive` or squash export;
-- or perform an explicit, reviewed history rewrite and force-update all
-  protected refs.
+- only the intended `main` branch is reachable;
+- no stale release tags point at pre-cleanup source;
+- history scans have no private upstream names, absolute maintainer paths,
+  secret patterns, or generated runtime bundles;
+- GitHub issues, PRs, labels, and project fields have been scanned or rewritten
+  for public-safe language.
 
-The npm tarball is not affected by Git history because it is built from the
-current package file allowlist. GitHub visibility is a separate release gate.
+GitHub may still retain unreachable object caches or historical Actions logs
+internally. Treat those as residual platform-cache risk and delete old workflow
+runs before public launch if a stricter surface is required.
 
 History-check shape used during this audit:
 
@@ -123,8 +126,8 @@ thread. That approval must come from the maintainer responsible for the release.
 
 ## Trusted Publishing Setup
 
-The first manual publish creates the npm package page. After that, configure npm
-Trusted Publishing for GitHub Actions:
+The npm package page exists. Trusted Publishing should be configured for GitHub
+Actions before cutting the next tag:
 
 - provider: GitHub Actions
 - repository owner: `danielgwilson`

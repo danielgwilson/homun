@@ -19,7 +19,7 @@ describe("release readiness", () => {
     };
 
     expect(packageJson.private).toBeUndefined();
-    expect(packageJson.version).toBe("0.1.2");
+    expect(packageJson.version).toBe("0.1.3");
     expect(packageJson.license).toBe("MIT");
     expect(packageJson.publishConfig?.access).toBe("public");
     expect(packageJson.dependencies).not.toHaveProperty("@e2b/desktop");
@@ -59,7 +59,7 @@ describe("release readiness", () => {
     const readme = await readFile("README.md", "utf8");
     const screenshot = await stat("docs/assets/mimetic-oss-lab-observer.png");
 
-    expect(readme).toContain("https://unpkg.com/mimetic-cli@0.1.2/docs/assets/mimetic-oss-lab-observer.png");
+    expect(readme).toContain("https://unpkg.com/mimetic-cli@latest/docs/assets/mimetic-oss-lab-observer.png");
     expect(screenshot.size).toBeGreaterThan(50_000);
   });
 
