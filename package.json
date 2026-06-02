@@ -27,12 +27,15 @@
     "mimetic": "./dist/cli.js"
   },
   "files": [
+    "AGENTS.md",
     "dist",
     "docs/architecture",
     "docs/assets",
     "docs/contracts",
+    "docs/goals",
     "docs/principles",
     "docs/product",
+    "docs/ramp",
     "docs/release",
     "docs/roadmap",
     "skills",
