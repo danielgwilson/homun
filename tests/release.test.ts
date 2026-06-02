@@ -39,7 +39,7 @@ describe("release readiness", () => {
   it("documents release gates and human publish decisions", async () => {
     const readiness = await readFile("docs/release/open-source-readiness.md", "utf8");
 
-    expect(readiness).toContain("public package candidate");
+    expect(readiness).toContain("public repository candidate after reviewed history cleanup");
     expect(readiness).toContain("License: MIT");
     expect(readiness).toContain("Actual `npm publish` remains a human release");
     expect(readiness).toContain("GitHub Visibility Gate");
