@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const skippedPaths = new Set([
@@ -48,14 +49,66 @@ const privateResiduePatterns = [
     .filter(Boolean))
 ];
 
+const approvedBinaryAssets = new Map([
+  ["docs/assets/mimetic-oss-lab-observer.png", "5891e05c6aa1d74ffde63485ce3752a6e1c5206f049b5adedefa195980b8c232"]
+]);
+
+const findings = [];
+
 function trackedFiles() {
   const raw = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], { encoding: "buffer" });
   return raw.toString("utf8").split("\0").filter(Boolean);
 }
 
-function reachableCommitEmails() {
+function packageFiles() {
   try {
-    const raw = execFileSync("git", ["log", "--all", "--format=%ae%n%ce"], { encoding: "utf8" });
+    const raw = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { encoding: "utf8" });
+    const packages = JSON.parse(raw);
+    if (!Array.isArray(packages)) {
+      findings.push({
+        file: "<npm-pack>",
+        line: 0,
+        name: "package_payload_unreadable",
+        value: "npm pack --dry-run --json did not return an array"
+      });
+      return [];
+    }
+    return packages.flatMap((entry) => {
+      if (!entry || typeof entry !== "object" || !Array.isArray(entry.files)) return [];
+      return entry.files
+        .map((file) => file && typeof file === "object" && typeof file.path === "string" ? file.path : null)
+        .filter(Boolean);
+    });
+  } catch (error) {
+    findings.push({
+      file: "<npm-pack>",
+      line: 0,
+      name: "package_payload_unreadable",
+      value: error instanceof Error ? error.message.slice(0, 160) : "unknown error"
+    });
+    return [];
+  }
+}
+
+function publicSurfaceFiles() {
+  return [...new Set([...trackedFiles(), ...packageFiles()])].sort();
+}
+
+function gitRefExists(ref) {
+  try {
+    execFileSync("git", ["rev-parse", "--verify", "--quiet", ref], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function reachableCommitEmails() {
+  const ref = (process.env.GITHUB_REF ?? "").startsWith("refs/pull/") && gitRefExists("HEAD^2")
+    ? "HEAD^2"
+    : "--all";
+  try {
+    const raw = execFileSync("git", ["log", ref, "--format=%ae%n%ce"], { encoding: "utf8" });
     return [...new Set(raw.split("\n").map((line) => line.trim()).filter(Boolean))];
   } catch {
     return [];
@@ -68,6 +121,11 @@ function shouldSkip(file) {
   return [...skippedExtensions].some((extension) => lower.endsWith(extension));
 }
 
+function isBinaryAsset(file) {
+  const lower = file.toLowerCase();
+  return [...skippedExtensions].some((extension) => lower.endsWith(extension));
+}
+
 function lineNumberFor(text, index) {
   let line = 1;
   for (let cursor = 0; cursor < index; cursor += 1) {
@@ -76,24 +134,57 @@ function lineNumberFor(text, index) {
   return line;
 }
 
-const findings = [];
-
 const githubNoreplyEmail = /^(?:noreply@github\.com|(?:github-actions\[bot\]|\d+\+[A-Za-z0-9-]+)@users\.noreply\.github\.com)$/;
-const isPullRequestMergeRef = (process.env.GITHUB_REF ?? "").startsWith("refs/pull/");
-if (!isPullRequestMergeRef) {
-  for (const email of reachableCommitEmails()) {
-    if (!githubNoreplyEmail.test(email)) {
-      findings.push({
-        file: "<git-history>",
-        line: 0,
-        name: "non_noreply_commit_email",
-        value: email
-      });
-    }
+for (const email of reachableCommitEmails()) {
+  if (!githubNoreplyEmail.test(email)) {
+    findings.push({
+      file: "<git-history>",
+      line: 0,
+      name: "non_noreply_commit_email",
+      value: email
+    });
   }
 }
 
-for (const file of trackedFiles()) {
+let scannedTextFiles = 0;
+let verifiedBinaryAssets = 0;
+const files = publicSurfaceFiles();
+
+for (const file of files) {
+  if (isBinaryAsset(file)) {
+    const approvedSha256 = approvedBinaryAssets.get(file);
+    if (!approvedSha256) {
+      findings.push({
+        file,
+        line: 0,
+        name: "unapproved_binary_asset",
+        value: "binary public asset must be explicitly allowlisted with sha256"
+      });
+      continue;
+    }
+    try {
+      const sha256 = createHash("sha256").update(readFileSync(file)).digest("hex");
+      if (sha256 !== approvedSha256) {
+        findings.push({
+          file,
+          line: 0,
+          name: "approved_binary_asset_hash_mismatch",
+          value: sha256
+        });
+      } else {
+        verifiedBinaryAssets += 1;
+      }
+    } catch {
+      findings.push({
+        file,
+        line: 0,
+        name: "approved_binary_asset_missing",
+        value: approvedSha256
+      });
+    }
+    continue;
+  }
+
   if (shouldSkip(file)) continue;
 
   let text;
@@ -114,6 +205,8 @@ for (const file of trackedFiles()) {
       });
     }
   }
+
+  scannedTextFiles += 1;
 }
 
 if (findings.length > 0) {
@@ -124,4 +217,4 @@ if (findings.length > 0) {
   process.exit(1);
 }
 
-console.log(`public-surface scan ok: ${trackedFiles().filter((file) => !shouldSkip(file)).length} candidate text files checked`);
+console.log(`public-surface scan ok: ${scannedTextFiles} candidate text files checked, ${verifiedBinaryAssets} binary assets verified`);

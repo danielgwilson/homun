@@ -29,6 +29,7 @@ describe("release readiness", () => {
     expect(packageJson.bugs?.url).toBe("https://github.com/danielgwilson/mimetic-cli/issues");
     expect(packageJson.keywords).toContain("persona-simulation");
     expect(packageJson.files).toEqual([
+      "AGENTS.md",
       "dist",
       "docs/architecture",
       "docs/assets",
@@ -62,6 +63,8 @@ describe("release readiness", () => {
     expect(readiness).toContain("from a fresh clone");
     expect(readiness).toContain("residual platform-cache risk");
     expect(readiness).toContain("reachable commit author and committer emails are GitHub noreply-style");
+    expect(readiness).toContain("npm dry-run payload");
+    expect(readiness).toContain("explicitly allowlisted by SHA-256");
     expect(readiness).toContain("skills/mimetic-cli/SKILL.md");
     expect(readiness).toContain("pnpm skill:check");
     expect(readiness).toContain("pnpm release:check && npm publish --access public");
@@ -71,22 +74,26 @@ describe("release readiness", () => {
     expect(readiness).toContain("No agent should run that command without explicit human approval");
     expect(readiness).toContain("`.mimetic/`");
     expect(readiness).toContain("`.npmrc`");
-    expect(readiness).toContain("non-noreply commit email metadata");
+    expect(readiness).toContain("non-noreply durable commit email metadata");
     expect(readiness).toContain("internal");
     expect(readiness).toContain("operations notes");
     expect(readiness).toContain("Public");
     expect(readiness).toContain("`docs/ramp/`");
     expect(readiness).toContain("`docs/goals/`");
+    expect(readiness).toContain("repo-local `AGENTS.md`");
   });
 
   it("keeps future-agent ramp and goal docs public-safe and packaged", async () => {
     const readme = await readFile("README.md", "utf8");
+    const agents = await readFile("AGENTS.md", "utf8");
     const ramp = await readFile("docs/ramp/README.md", "utf8");
     const goals = await readFile("docs/goals/current.md", "utf8");
 
     expect(readme).toContain("docs/ramp/README.md");
     expect(readme).toContain("docs/goals/current.md");
+    expect(agents).toContain("Assume this repository is public.");
     expect(ramp).toContain("Future agents should be able to continue from the repo");
+    expect(ramp).toContain("[`AGENTS.md`](../../AGENTS.md)");
     expect(goals).toContain("Best Next Work");
     const forbidden = [
       ["", "Users", ""].join("/"),

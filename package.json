@@ -27,6 +27,7 @@
     "mimetic": "./dist/cli.js"
   },
   "files": [
+    "AGENTS.md",
     "dist",
     "docs/architecture",
     "docs/assets",
