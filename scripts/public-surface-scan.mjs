@@ -79,14 +79,17 @@ function lineNumberFor(text, index) {
 const findings = [];
 
 const githubNoreplyEmail = /^(?:noreply@github\.com|(?:github-actions\[bot\]|\d+\+[A-Za-z0-9-]+)@users\.noreply\.github\.com)$/;
-for (const email of reachableCommitEmails()) {
-  if (!githubNoreplyEmail.test(email)) {
-    findings.push({
-      file: "<git-history>",
-      line: 0,
-      name: "non_noreply_commit_email",
-      value: email
-    });
+const isPullRequestMergeRef = (process.env.GITHUB_REF ?? "").startsWith("refs/pull/");
+if (!isPullRequestMergeRef) {
+  for (const email of reachableCommitEmails()) {
+    if (!githubNoreplyEmail.test(email)) {
+      findings.push({
+        file: "<git-history>",
+        line: 0,
+        name: "non_noreply_commit_email",
+        value: email
+      });
+    }
   }
 }
 
