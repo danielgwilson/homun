@@ -1625,7 +1625,7 @@ export function observerClientJs(): string {
     var surface = document.createElement("div");
     surface.className = "media-surface";
 
-    if (preferScreenshots && stream.ui && stream.ui.screenshotUrl) {
+    if (stream.ui && stream.ui.screenshotUrl && (preferScreenshots || (stream.embed && stream.embed.kind === "screenshot"))) {
       var img = document.createElement("img");
       img.src = stream.ui.screenshotUrl;
       img.alt = "Screenshot for " + stream.id;
@@ -1696,7 +1696,15 @@ export function observerClientJs(): string {
     spinner.setAttribute("aria-hidden", "true");
     var title = document.createElement("div");
     title.className = "live-waiting-title";
-    title.textContent = stream.status === "contract_proof_only" ? "Contract proof only" : "Waiting for live desktop";
+    title.textContent = stream.status === "contract_proof_only"
+      ? "Contract proof only"
+      : stream.status === "failed"
+        ? "Live desktop failed"
+        : stream.status === "timed_out"
+          ? "Live desktop timed out"
+          : stream.status === "blocked"
+            ? "Live desktop blocked"
+            : "Waiting for live desktop";
     var url = document.createElement("div");
     url.className = "live-waiting-url";
     url.textContent = stream.ui && stream.ui.route ? stream.ui.route : stream.label;

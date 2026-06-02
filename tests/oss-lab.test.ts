@@ -239,6 +239,11 @@ describe("OSS lab command", () => {
             status: "passed"
           },
           repo: "developit/mitt",
+          screenshot: {
+            capturedAt: "2026-06-02T08:31:05.000Z",
+            observerUrl: "../screenshots/oss-01-desktop.png",
+            path: "screenshots/oss-01-desktop.png"
+          },
           simId: assignments[0]?.simId ?? "oss-01",
           streamId: assignments[0]?.streamId ?? "oss-01-desktop",
           url: "https://stream.example/developit-mitt"
@@ -279,6 +284,17 @@ describe("OSS lab command", () => {
       nestedObserverPresent: true,
       nestedVerifyPassed: true,
       status: "passed"
+    });
+    expect(bundle.streams[0]).toMatchObject({
+      transport: "snapshot",
+      embed: { kind: "screenshot" },
+      ui: { screenshotUrl: "../screenshots/oss-01-desktop.png" }
+    });
+    expect(bundle.streams[0]?.url).toBeUndefined();
+    expect(bundle.streams[0]?.artifacts).toContainEqual({
+      label: "desktop screenshot",
+      path: "screenshots/oss-01-desktop.png",
+      kind: "screenshot"
     });
     expect(bundle.streams[1]?.terminal?.tail).toContain("verification failed");
     expect(bundle.events.map((event) => event.type)).toContain("oss-meta.bootstrap.passed");

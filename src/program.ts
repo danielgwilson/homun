@@ -911,7 +911,8 @@ function formatOssMetaLabHuman(result: OssMetaLabResult): string {
       const sandboxLabel = sandbox.sandboxId ? ` sandbox=${sandbox.sandboxId}` : "";
       const bootstrapLabel = sandbox.bootstrapStatus ? ` bootstrap=${sandbox.bootstrapStatus}` : "";
       const completionLabel = sandbox.completionStatus ? ` completion=${sandbox.completionStatus}` : "";
-      return `sandbox ${sandbox.streamId}: ${sandbox.repo} stream=${sandbox.urlPresent ? "connected" : "missing"}${bootstrapLabel}${completionLabel}${sandboxLabel}`;
+      const screenshotLabel = sandbox.screenshotPresent ? " screenshot=yes" : "";
+      return `sandbox ${sandbox.streamId}: ${sandbox.repo} stream=${sandbox.urlPresent ? "connected" : "missing"}${bootstrapLabel}${completionLabel}${screenshotLabel}${sandboxLabel}`;
     }),
     ...result.warnings.map((warning) => `warning: ${warning}`)
   ].join("\n") + "\n";

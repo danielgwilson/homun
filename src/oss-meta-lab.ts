@@ -52,6 +52,7 @@ interface OssMetaLabLiveDesktop {
   desktop?: E2BDesktopSandbox;
   error?: string;
   repo: string;
+  screenshot?: OssMetaLabScreenshot;
   sandboxId?: string;
   simId: string;
   streamId: string;
@@ -79,6 +80,12 @@ export interface OssMetaLabCompletion {
   nestedVerifyPassed?: boolean;
   reason: string;
   status: OssMetaLabCompletionStatus;
+}
+
+export interface OssMetaLabScreenshot {
+  capturedAt: string;
+  observerUrl: string;
+  path: string;
 }
 
 interface OssMetaLabLocalPackage {
@@ -110,6 +117,7 @@ export interface OssMetaLabResult {
     completionReason?: string;
     completionStatus?: OssMetaLabCompletionStatus;
     repo: string;
+    screenshotPresent?: boolean;
     sandboxId?: string;
     streamId: string;
     urlPresent: boolean;
@@ -264,6 +272,9 @@ export async function runOssMetaLab(options: OssMetaLabOptions): Promise<OssMeta
   const artifactRoot = path.join(cwd, ".mimetic", "runs", runId);
   const bundlePath = path.join(artifactRoot, "run.json");
   const createdAt = new Date().toISOString();
+  await mkdir(artifactRoot, { recursive: true });
+  const screenshotSummary = await captureLiveDesktopScreenshots(artifactRoot, liveDesktops);
+  warnings.push(...screenshotSummary.warnings);
   const bundle = buildMetaBundle({
     assignments,
     createdAt,
@@ -275,7 +286,6 @@ export async function runOssMetaLab(options: OssMetaLabOptions): Promise<OssMeta
     runId
   });
 
-  await mkdir(artifactRoot, { recursive: true });
   await writeJson(bundlePath, bundle);
   await writeJson(path.join(artifactRoot, "review.json"), bundle.review);
   await writeFile(path.join(artifactRoot, "review.md"), renderMetaReviewMarkdown(bundle), "utf8");
@@ -309,6 +319,7 @@ export function buildOssMetaBundleFixture(args: {
     completion?: OssMetaLabCompletion;
     error?: string;
     repo: string;
+    screenshot?: OssMetaLabScreenshot;
     sandboxId?: string;
     simId: string;
     streamId: string;
@@ -357,6 +368,7 @@ function buildMetaBundle(args: {
     const liveDesktop = args.liveDesktops.find((desktop) => desktop.streamId === assignment.streamId);
     const status = statusForMeta(args, liveDesktop);
     const completion = liveDesktop?.completion;
+    const screenshot = liveDesktop?.screenshot;
     const terminalTail = terminalTailForMeta(prompt, liveDesktop);
     simulations.push({
       id: assignment.simId,
@@ -384,12 +396,12 @@ function buildMetaBundle(args: {
       kind: "browser",
       label: `E2B desktop - ${assignment.repo}`,
       status,
-      transport: liveDesktop?.url ? "sse" : status === "contract_proof_only" ? "snapshot" : "sse",
+      transport: screenshot ? "snapshot" : liveDesktop?.url ? "sse" : status === "contract_proof_only" ? "snapshot" : "sse",
       updatedAt: args.createdAt,
-      ...(liveDesktop?.url ? { url: liveDesktop.url } : {}),
+      ...(liveDesktop?.url && !screenshot ? { url: liveDesktop.url } : {}),
       embed: {
-        kind: liveDesktop?.url ? "iframe" : "placeholder",
-        ...(liveDesktop?.url ? { url: liveDesktop.url } : {}),
+        kind: screenshot ? "screenshot" : liveDesktop?.url ? "iframe" : "placeholder",
+        ...(liveDesktop?.url && !screenshot ? { url: liveDesktop.url } : {}),
         title: `E2B desktop ${assignment.index}`
       },
       viewport: {
@@ -406,6 +418,7 @@ function buildMetaBundle(args: {
       ui: {
         route: `e2b://desktop/${assignment.repo}`,
         intent: "Watch the headed desktop where Codex clones the repo, sets up Mimetic, and opens the nested Observer.",
+        ...(screenshot ? { screenshotUrl: screenshot.observerUrl } : {}),
         state: completion
           ? completion.reason
           : liveDesktop?.bootstrap?.status === "started"
@@ -418,7 +431,8 @@ function buildMetaBundle(args: {
         { label: "review", path: "review.md", kind: "review" },
         { label: "events", path: "events.ndjson", kind: "events" },
         ...(liveDesktop?.bootstrap?.logPath ? [{ label: "remote bootstrap log", path: liveDesktop.bootstrap.logPath, kind: "log" as const }] : []),
-        ...(liveDesktop?.bootstrap?.nestedObserverPath ? [{ label: "nested observer path", path: liveDesktop.bootstrap.nestedObserverPath, kind: "observer" as const }] : [])
+        ...(liveDesktop?.bootstrap?.nestedObserverPath ? [{ label: "nested observer path", path: liveDesktop.bootstrap.nestedObserverPath, kind: "observer" as const }] : []),
+        ...(screenshot ? [{ label: "desktop screenshot", path: screenshot.path, kind: "screenshot" as const }] : [])
       ]
     });
 
@@ -952,6 +966,47 @@ async function readRemoteLogTail(
   return sanitizeRemoteLog(result?.stdout ?? "");
 }
 
+async function captureLiveDesktopScreenshots(
+  artifactRoot: string,
+  liveDesktops: OssMetaLabLiveDesktop[]
+): Promise<{ warnings: string[] }> {
+  const candidates = liveDesktops.filter((desktop) => desktop.desktop && desktop.url);
+  if (candidates.length === 0) {
+    return { warnings: [] };
+  }
+
+  const screenshotRoot = path.join(artifactRoot, "screenshots");
+  await mkdir(screenshotRoot, { recursive: true });
+  const warnings: string[] = [];
+
+  await Promise.all(candidates.map(async (desktop) => {
+    if (!desktop.desktop) {
+      return;
+    }
+
+    try {
+      const bytes = await desktop.desktop.screenshot("bytes");
+      const fileName = `${safeArtifactToken(desktop.streamId)}.png`;
+      const screenshotPath = path.join(screenshotRoot, fileName);
+      await writeFile(screenshotPath, Buffer.from(bytes));
+      desktop.screenshot = {
+        capturedAt: new Date().toISOString(),
+        observerUrl: `../screenshots/${fileName}`,
+        path: path.join("screenshots", fileName)
+      };
+    } catch (error) {
+      warnings.push(`Screenshot capture failed for ${desktop.repo}: ${compactError(error)}`);
+    }
+  }));
+
+  const capturedCount = liveDesktops.filter((desktop) => desktop.screenshot).length;
+  if (capturedCount > 0) {
+    warnings.push(`Captured ${capturedCount}/${candidates.length} E2B desktop screenshot fallback${candidates.length === 1 ? "" : "s"}.`);
+  }
+
+  return { warnings };
+}
+
 function parseRemoteCompletion(payload: string): OssMetaLabCompletion | null {
   try {
     const parsed = JSON.parse(payload) as {
@@ -1438,6 +1493,7 @@ function formatLiveDesktopForResult(desktop: OssMetaLabLiveDesktop): OssMetaLabR
     ...(desktop.bootstrap ? { bootstrapStatus: desktop.bootstrap.status } : {}),
     ...(desktop.completion ? { completionReason: desktop.completion.reason, completionStatus: desktop.completion.status } : {}),
     repo: desktop.repo,
+    ...(desktop.screenshot ? { screenshotPresent: true } : {}),
     ...(desktop.sandboxId ? { sandboxId: desktop.sandboxId } : {}),
     streamId: desktop.streamId,
     urlPresent: Boolean(desktop.url)
@@ -1488,6 +1544,11 @@ function repoSlugToken(repo: string): string {
   return repo.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
+function safeArtifactToken(value: string): string {
+  const token = value.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+  return token || "artifact";
+}
+
 async function writeJson(filePath: string, value: unknown): Promise<void> {
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
@@ -1523,6 +1584,7 @@ interface E2BDesktopSandbox {
     }): Promise<unknown>;
   };
   launch(application: string, uri?: string): Promise<void>;
+  screenshot(format?: "bytes"): Promise<Uint8Array>;
   wait(ms: number): Promise<void>;
   stream: {
     getAuthKey(): string;
