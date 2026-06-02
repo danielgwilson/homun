@@ -15,7 +15,7 @@ export interface ObserverData {
   run: {
     runId: string;
     mode: RunBundle["mode"];
-    status: "contract_proof_only" | "running" | "complete" | "failed";
+    status: RunBundle["review"]["verdict"];
     title: string;
     createdAt: string;
     simCount: number;
