@@ -49,15 +49,15 @@
 - name: area:docs
   color: "C5DEF5"
   description: Documentation and repo-operating notes.
-- name: adapter:private-web-adapter
+- name: adapter:web-app
   color: "BFD4F2"
-  description: web-app harness adapter proof work.
+  description: Browser/web app adapter proof work.
 - name: adapter:terminal-product
   color: "BFD4F2"
-  description: terminal/product harness-style adapter proof work.
+  description: Agent-facing product adapter proof work.
 - name: adapter:multi-app
   color: "BFD4F2"
-  description: multi-app harness adapter proof work.
+  description: Multi-app adapter proof work.
 - name: authority:observe
   color: "EDEDED"
   description: Agent authority is read/report only.
