@@ -910,7 +910,8 @@ function formatOssMetaLabHuman(result: OssMetaLabResult): string {
     ...result.sandboxes.map((sandbox) => {
       const sandboxLabel = sandbox.sandboxId ? ` sandbox=${sandbox.sandboxId}` : "";
       const bootstrapLabel = sandbox.bootstrapStatus ? ` bootstrap=${sandbox.bootstrapStatus}` : "";
-      return `sandbox ${sandbox.streamId}: ${sandbox.repo} stream=${sandbox.urlPresent ? "connected" : "missing"}${bootstrapLabel}${sandboxLabel}`;
+      const completionLabel = sandbox.completionStatus ? ` completion=${sandbox.completionStatus}` : "";
+      return `sandbox ${sandbox.streamId}: ${sandbox.repo} stream=${sandbox.urlPresent ? "connected" : "missing"}${bootstrapLabel}${completionLabel}${sandboxLabel}`;
     }),
     ...result.warnings.map((warning) => `warning: ${warning}`)
   ].join("\n") + "\n";

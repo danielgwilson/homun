@@ -23,7 +23,8 @@ import type {
   RunEvent,
   RunResult,
   RunSimulation,
-  RunStream
+  RunStream,
+  RunStreamCompletion
 } from "./run.js";
 
 export const OSS_META_LAB_SCHEMA = "mimetic.oss-meta-lab-result.v1";
@@ -47,6 +48,8 @@ export interface OssMetaLabAssignment {
 
 interface OssMetaLabLiveDesktop {
   bootstrap?: OssMetaLabBootstrap;
+  completion?: OssMetaLabCompletion;
+  desktop?: E2BDesktopSandbox;
   error?: string;
   repo: string;
   sandboxId?: string;
@@ -57,12 +60,25 @@ interface OssMetaLabLiveDesktop {
 
 interface OssMetaLabBootstrap {
   codexMode: "tui-attempted";
+  completionPath?: string;
   launcherPath?: string;
   logPath?: string;
   mimeticPackageUploaded: boolean;
   nestedObserverPath?: string;
   status: "started" | "failed";
   tail: string;
+}
+
+export type OssMetaLabCompletionStatus = "running" | "passed" | "failed" | "blocked" | "timed_out";
+
+export interface OssMetaLabCompletion {
+  checkedAt: string;
+  exitCode?: number;
+  logTail?: string;
+  nestedObserverPresent?: boolean;
+  nestedVerifyPassed?: boolean;
+  reason: string;
+  status: OssMetaLabCompletionStatus;
 }
 
 interface OssMetaLabLocalPackage {
@@ -91,6 +107,8 @@ export interface OssMetaLabResult {
   runId?: string;
   sandboxes: Array<{
     bootstrapStatus?: "started" | "failed";
+    completionReason?: string;
+    completionStatus?: OssMetaLabCompletionStatus;
     repo: string;
     sandboxId?: string;
     streamId: string;
@@ -186,6 +204,8 @@ export async function runOssMetaLab(options: OssMetaLabOptions): Promise<OssMeta
   if (liveRequested && missingKeys.length === 0) {
     try {
       liveDesktops = await launchLiveDesktops(assignments, localPackage ? { localPackage } : {});
+      const completionSummary = await pollLiveDesktopCompletions(liveDesktops);
+      warnings.push(...completionSummary.warnings);
     } catch (error) {
       warnings.push(compactError(error));
       liveDesktops = assignments.map((assignment) => ({
@@ -199,10 +219,14 @@ export async function runOssMetaLab(options: OssMetaLabOptions): Promise<OssMeta
   const liveDesktopCount = liveDesktops.filter((desktop) => desktop.url).length;
   const failedLiveDesktopCount = liveDesktops.filter((desktop) => desktop.error).length;
   const startedBootstrapCount = liveDesktops.filter((desktop) => desktop.bootstrap?.status === "started").length;
+  const terminalCompletionCount = liveDesktops.filter((desktop) => isTerminalCompletion(desktop.completion)).length;
   if (liveDesktops.length > 0) {
     warnings.push(`Launched ${liveDesktopCount}/${liveDesktops.length} live E2B desktop stream${liveDesktops.length === 1 ? "" : "s"}.`);
     if (startedBootstrapCount > 0) {
       warnings.push(`Started ${startedBootstrapCount}/${liveDesktops.length} visible bootstrap terminal${liveDesktops.length === 1 ? "" : "s"} for Codex TUI attempt and nested Mimetic setup.`);
+      if (terminalCompletionCount > 0) {
+        warnings.push(`Classified ${terminalCompletionCount}/${startedBootstrapCount} bootstrap terminal state${startedBootstrapCount === 1 ? "" : "s"} from remote public-safe evidence.`);
+      }
     } else {
       warnings.push("Codex TUI injection and nested Mimetic execution remain the next substrate slice behind these live desktops.");
     }
@@ -275,6 +299,37 @@ export async function runOssMetaLab(options: OssMetaLabOptions): Promise<OssMeta
   };
 }
 
+export function buildOssMetaBundleFixture(args: {
+  assignments: OssMetaLabAssignment[];
+  createdAt: string;
+  cwd: string;
+  dryRun: boolean;
+  lanes: Array<{
+    bootstrap?: OssMetaLabBootstrap;
+    completion?: OssMetaLabCompletion;
+    error?: string;
+    repo: string;
+    sandboxId?: string;
+    simId: string;
+    streamId: string;
+    url?: string;
+  }>;
+  liveRequested: boolean;
+  missingKeys: string[];
+  runId: string;
+}): RunBundle {
+  return buildMetaBundle({
+    assignments: args.assignments,
+    createdAt: args.createdAt,
+    cwd: args.cwd,
+    dryRun: args.dryRun,
+    liveDesktops: args.lanes,
+    liveRequested: args.liveRequested,
+    missingKeys: args.missingKeys,
+    runId: args.runId
+  });
+}
+
 function buildMetaBundle(args: {
   assignments: OssMetaLabAssignment[];
   createdAt: string;
@@ -301,6 +356,8 @@ function buildMetaBundle(args: {
     const prompt = buildCodexBootstrapPrompt(assignment);
     const liveDesktop = args.liveDesktops.find((desktop) => desktop.streamId === assignment.streamId);
     const status = statusForMeta(args, liveDesktop);
+    const completion = liveDesktop?.completion;
+    const terminalTail = terminalTailForMeta(prompt, liveDesktop);
     simulations.push({
       id: assignment.simId,
       index: assignment.index,
@@ -311,7 +368,9 @@ function buildMetaBundle(args: {
       mode: "ui-sim",
       progress: progressForMeta(status, liveDesktop),
       currentStep: currentStepForMeta(args, assignment),
-      summary: liveDesktop?.bootstrap?.status === "started"
+      summary: completion
+        ? `Headed E2B desktop lane assigned to ${assignment.repo}; ${completion.reason}`
+        : liveDesktop?.bootstrap?.status === "started"
         ? `Headed E2B desktop lane assigned to ${assignment.repo}; bootstrap terminal launched to set up Mimetic and open the nested Observer.`
         : `Headed E2B desktop lane assigned to ${assignment.repo}; nested Codex TUI should set up Mimetic and open a nested Observer inside that desktop.`,
       streamIds: [assignment.streamId],
@@ -342,15 +401,18 @@ function buildMetaBundle(args: {
         title: `Codex TUI bootstrap - ${assignment.repo}`,
         format: "plain",
         stdin: liveDesktop?.bootstrap ? "sent" : "planned",
-        tail: liveDesktop?.bootstrap?.tail ?? prompt
+        tail: terminalTail
       },
       ui: {
         route: `e2b://desktop/${assignment.repo}`,
         intent: "Watch the headed desktop where Codex clones the repo, sets up Mimetic, and opens the nested Observer.",
-        state: liveDesktop?.bootstrap?.status === "started"
+        state: completion
+          ? completion.reason
+          : liveDesktop?.bootstrap?.status === "started"
           ? "bootstrap terminal launched"
           : liveDesktop?.url ? "live E2B desktop" : args.dryRun ? "contract desktop" : "headed E2B desktop"
       },
+      ...(completion ? { completion: completionForStream(completion) } : {}),
       artifacts: [
         { label: "run bundle", path: "run.json", kind: "bundle" },
         { label: "review", path: "review.md", kind: "review" },
@@ -401,6 +463,17 @@ function buildMetaBundle(args: {
           simId: assignment.simId,
           streamId: assignment.streamId
         });
+        if (completion) {
+          events.push({
+            id: `event-${String(assignment.index).padStart(3, "0")}-bootstrap-${completion.status}`,
+            at: completion.checkedAt,
+            level: eventLevelForCompletion(completion.status),
+            type: `oss-meta.bootstrap.${completion.status}`,
+            message: `${assignment.repo}: ${completion.reason}`,
+            simId: assignment.simId,
+            streamId: assignment.streamId
+          });
+        }
       } else if (liveDesktop.bootstrap?.status === "failed") {
         events.push({
           id: `event-${String(assignment.index).padStart(3, "0")}-bootstrap-failed`,
@@ -531,6 +604,10 @@ function statusForMeta(args: {
   missingKeys: string[];
 }, liveDesktop: OssMetaLabLiveDesktop | undefined): RunSimulation["status"] {
   if (args.dryRun) return "contract_proof_only";
+  if (liveDesktop?.completion?.status === "passed") return "passed";
+  if (liveDesktop?.completion?.status === "failed") return "failed";
+  if (liveDesktop?.completion?.status === "blocked") return "blocked";
+  if (liveDesktop?.completion?.status === "timed_out") return "timed_out";
   if (liveDesktop?.bootstrap?.status === "failed") return "failed";
   if (liveDesktop?.url) return "running";
   if (liveDesktop?.error) return "failed";
@@ -540,6 +617,9 @@ function statusForMeta(args: {
 
 function progressForMeta(status: RunSimulation["status"], liveDesktop: OssMetaLabLiveDesktop | undefined): number {
   if (status === "contract_proof_only") return 100;
+  if (status === "passed") return 100;
+  if (status === "timed_out") return 100;
+  if (status === "failed" && liveDesktop?.completion) return 100;
   if (status === "blocked") return 18;
   if (status === "failed") return 8;
   if (liveDesktop?.bootstrap?.status === "started") return 74;
@@ -556,6 +636,9 @@ function currentStepForMeta(args: {
   const liveDesktop = args.liveDesktops.find((desktop) => desktop.streamId === assignment.streamId);
   if (args.dryRun) {
     return `Contract ready for ${assignment.repo}; no E2B desktop launched.`;
+  }
+  if (liveDesktop?.completion) {
+    return liveDesktop.completion.reason;
   }
   if (liveDesktop?.bootstrap?.status === "started") {
     return `Bootstrap terminal launched for ${assignment.repo}; Codex TUI attempt, Mimetic setup, and nested Observer run inside the desktop.`;
@@ -581,8 +664,12 @@ function createMetaReview(args: {
   liveRequested: boolean;
   missingKeys: string[];
 }): ReviewSummary {
+  const started = args.liveDesktops.filter((desktop) => desktop.bootstrap?.status === "started");
+  const terminalCompletions = args.liveDesktops.filter((desktop) => isTerminalCompletion(desktop.completion));
   const gaps = [
-    args.liveDesktops.some((desktop) => desktop.bootstrap?.status === "started")
+    started.length > 0 && terminalCompletions.length === started.length
+      ? "OSS lane terminal states are classified from public-safe remote bootstrap evidence; this still proves nested Mimetic setup rather than target product behavior."
+      : args.liveDesktops.some((desktop) => desktop.bootstrap?.status === "started")
       ? "Visible E2B bootstrap terminals are launched and run nested Mimetic setup; completion is watched in the desktop stream rather than polled back into the top-level bundle yet."
       : "Nested Mimetic Observer evidence is represented as a lane contract until Codex TUI injection and nested Mimetic execution land.",
     "The top-level run does not clone, modify, commit, push, or file issues in target repos.",
@@ -601,6 +688,8 @@ function createMetaReview(args: {
     verdict: "contract_proof_only",
     summary: args.dryRun
       ? "OSS meta-lab dry-run rendered the Observer-of-Observers contract without provider spend."
+      : terminalCompletions.length > 0
+        ? `OSS meta-lab launched live E2B desktop streams and classified ${terminalCompletions.length}/${started.length || terminalCompletions.length} bootstrap terminal state${terminalCompletions.length === 1 ? "" : "s"} from public-safe remote evidence.`
       : args.liveDesktops.some((desktop) => desktop.bootstrap?.status === "started")
         ? "OSS meta-lab launched live E2B desktop streams, injected visible bootstrap terminals, and started nested Mimetic setup inside each desktop."
         : args.liveDesktops.some((desktop) => desktop.url)
@@ -608,6 +697,48 @@ function createMetaReview(args: {
         : "OSS meta-lab rendered the live headed-desktop control surface and marked the missing substrate truth in-lane.",
     gaps
   };
+}
+
+function terminalTailForMeta(prompt: string, liveDesktop: OssMetaLabLiveDesktop | undefined): string {
+  if (!liveDesktop?.completion) {
+    return liveDesktop?.bootstrap?.tail ?? prompt;
+  }
+
+  const lines = [
+    `Remote bootstrap ${liveDesktop.completion.status}: ${liveDesktop.completion.reason}`,
+    `checked_at: ${liveDesktop.completion.checkedAt}`,
+    ...(liveDesktop.completion.exitCode === undefined ? [] : [`exit_code: ${liveDesktop.completion.exitCode}`]),
+    ...(liveDesktop.completion.nestedVerifyPassed === undefined ? [] : [`nested_verify_passed: ${liveDesktop.completion.nestedVerifyPassed ? "true" : "false"}`]),
+    ...(liveDesktop.completion.nestedObserverPresent === undefined ? [] : [`nested_observer_present: ${liveDesktop.completion.nestedObserverPresent ? "true" : "false"}`]),
+    "",
+    "public-safe log tail:",
+    liveDesktop.completion.logTail?.trim() || "(no log tail captured)"
+  ];
+
+  return lines.join("\n").trim();
+}
+
+function completionForStream(completion: OssMetaLabCompletion): RunStreamCompletion {
+  return {
+    checkedAt: completion.checkedAt,
+    ...(completion.exitCode === undefined ? {} : { exitCode: completion.exitCode }),
+    ...(completion.logTail === undefined ? {} : { logTail: completion.logTail }),
+    ...(completion.nestedObserverPresent === undefined ? {} : { nestedObserverPresent: completion.nestedObserverPresent }),
+    ...(completion.nestedVerifyPassed === undefined ? {} : { nestedVerifyPassed: completion.nestedVerifyPassed }),
+    reason: completion.reason,
+    status: completion.status
+  };
+}
+
+function eventLevelForCompletion(status: OssMetaLabCompletionStatus): RunEvent["level"] {
+  if (status === "passed") return "info";
+  if (status === "running") return "info";
+  if (status === "blocked" || status === "timed_out") return "warn";
+  return "error";
+}
+
+function isTerminalCompletion(completion: OssMetaLabCompletion | undefined): boolean {
+  return completion !== undefined && completion.status !== "running";
 }
 
 function buildCodexBootstrapPrompt(assignment: OssMetaLabAssignment): string {
@@ -707,6 +838,7 @@ async function launchLiveDesktops(
 
       return {
         bootstrap,
+        desktop,
         repo: assignment.repo,
         sandboxId: desktop.sandboxId,
         simId: assignment.simId,
@@ -722,6 +854,175 @@ async function launchLiveDesktops(
       };
     }
   }));
+}
+
+async function pollLiveDesktopCompletions(liveDesktops: OssMetaLabLiveDesktop[]): Promise<{ warnings: string[] }> {
+  const pollable = liveDesktops.filter((desktop) =>
+    desktop.desktop
+    && desktop.bootstrap?.status === "started"
+    && desktop.bootstrap.completionPath
+  );
+  if (pollable.length === 0) {
+    return { warnings: [] };
+  }
+
+  const timeoutMs = readNonNegativeInt(process.env.MIMETIC_OSS_META_COMPLETION_TIMEOUT_MS, 240_000);
+  const intervalMs = readPositiveInt(process.env.MIMETIC_OSS_META_COMPLETION_INTERVAL_MS, 5_000);
+  const requestTimeoutMs = readPositiveInt(process.env.MIMETIC_E2B_REQUEST_TIMEOUT_MS, 60_000);
+  const warnings: string[] = [];
+
+  if (timeoutMs === 0) {
+    warnings.push("OSS meta-lab completion polling skipped because MIMETIC_OSS_META_COMPLETION_TIMEOUT_MS=0.");
+    return { warnings };
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    await Promise.all(pollable.map(async (desktop) => {
+      if (isTerminalCompletion(desktop.completion) || !desktop.desktop || !desktop.bootstrap?.completionPath) {
+        return;
+      }
+
+      const completion = await readRemoteCompletion(desktop.desktop, desktop.bootstrap, requestTimeoutMs);
+      if (completion) {
+        desktop.completion = completion;
+      }
+    }));
+
+    if (pollable.every((desktop) => isTerminalCompletion(desktop.completion))) {
+      return { warnings };
+    }
+
+    await wait(Math.min(intervalMs, Math.max(0, deadline - Date.now())));
+  }
+
+  await Promise.all(pollable.map(async (desktop) => {
+    if (isTerminalCompletion(desktop.completion) || !desktop.desktop || !desktop.bootstrap) {
+      return;
+    }
+
+    desktop.completion = {
+      checkedAt: new Date().toISOString(),
+      logTail: await readRemoteLogTail(desktop.desktop, desktop.bootstrap, requestTimeoutMs),
+      reason: `Timed out waiting ${timeoutMs}ms for remote bootstrap completion marker.`,
+      status: "timed_out"
+    };
+  }));
+
+  warnings.push(`Timed out waiting for ${pollable.filter((desktop) => desktop.completion?.status === "timed_out").length}/${pollable.length} OSS meta-lab bootstrap completion marker${pollable.length === 1 ? "" : "s"}.`);
+  return { warnings };
+}
+
+async function readRemoteCompletion(
+  desktop: E2BDesktopSandbox,
+  bootstrap: OssMetaLabBootstrap,
+  requestTimeoutMs: number
+): Promise<OssMetaLabCompletion | null> {
+  if (!bootstrap.completionPath) {
+    return null;
+  }
+
+  const command = `if [ -f ${shellQuote(bootstrap.completionPath)} ]; then cat ${shellQuote(bootstrap.completionPath)}; else exit 3; fi`;
+  const result = await desktop.commands.run(`bash -lc ${shellQuote(command)}`, {
+    requestTimeoutMs,
+    timeoutMs: 30_000
+  }).catch(() => null);
+  if (!result || (result.exitCode && result.exitCode !== 0) || !result.stdout) {
+    return null;
+  }
+
+  return parseRemoteCompletion(result.stdout);
+}
+
+async function readRemoteLogTail(
+  desktop: E2BDesktopSandbox,
+  bootstrap: OssMetaLabBootstrap,
+  requestTimeoutMs: number
+): Promise<string> {
+  if (!bootstrap.logPath) {
+    return "";
+  }
+
+  const command = `tail -n 80 ${shellQuote(bootstrap.logPath)} 2>/dev/null || true`;
+  const result = await desktop.commands.run(`bash -lc ${shellQuote(command)}`, {
+    requestTimeoutMs,
+    timeoutMs: 30_000
+  }).catch(() => null);
+
+  return sanitizeRemoteLog(result?.stdout ?? "");
+}
+
+function parseRemoteCompletion(payload: string): OssMetaLabCompletion | null {
+  try {
+    const parsed = JSON.parse(payload) as {
+      completedAt?: unknown;
+      exitCode?: unknown;
+      logTail?: unknown;
+      nestedObserverPresent?: unknown;
+      nestedVerifyStatus?: unknown;
+      reason?: unknown;
+      status?: unknown;
+    };
+    const status = normalizeCompletionStatus(parsed.status);
+    if (!status) {
+      return null;
+    }
+
+    const nestedVerifyPassed = parsed.nestedVerifyStatus === "passed"
+      ? true
+      : parsed.nestedVerifyStatus === "failed" ? false : undefined;
+
+    return {
+      checkedAt: typeof parsed.completedAt === "string" ? parsed.completedAt : new Date().toISOString(),
+      ...(typeof parsed.exitCode === "number" ? { exitCode: parsed.exitCode } : {}),
+      ...(typeof parsed.logTail === "string" ? { logTail: sanitizeRemoteLog(parsed.logTail) } : {}),
+      ...(typeof parsed.nestedObserverPresent === "boolean" ? { nestedObserverPresent: parsed.nestedObserverPresent } : {}),
+      ...(nestedVerifyPassed === undefined ? {} : { nestedVerifyPassed }),
+      reason: typeof parsed.reason === "string" && parsed.reason.trim()
+        ? sanitizeRemoteLog(parsed.reason).replace(/\s+/g, " ").slice(0, 240)
+        : defaultReasonForCompletion(status),
+      status
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeCompletionStatus(value: unknown): OssMetaLabCompletionStatus | null {
+  return value === "running"
+    || value === "passed"
+    || value === "failed"
+    || value === "blocked"
+    || value === "timed_out"
+    ? value
+    : null;
+}
+
+function defaultReasonForCompletion(status: OssMetaLabCompletionStatus): string {
+  switch (status) {
+    case "passed":
+      return "Remote bootstrap completed successfully.";
+    case "failed":
+      return "Remote bootstrap failed.";
+    case "blocked":
+      return "Remote bootstrap is blocked.";
+    case "timed_out":
+      return "Remote bootstrap completion timed out.";
+    case "running":
+      return "Remote bootstrap is still running.";
+  }
+}
+
+function sanitizeRemoteLog(value: string): string {
+  return value
+    .replace(/sk-[A-Za-z0-9_-]{12,}/g, "[redacted-openai-key]")
+    .replace(/e2b_[A-Za-z0-9_-]{12,}/g, "[redacted-e2b-key]")
+    .replace(/gh[pousr]_[A-Za-z0-9_]{12,}/g, "[redacted-github-token]")
+    .replace(/https?:\/\/[^/\s]*e2b[^)\s]+/gi, "[redacted-e2b-url]")
+    .split(/\r?\n/)
+    .slice(-80)
+    .join("\n")
+    .trim();
 }
 
 async function loadE2BDesktopModule(): Promise<E2BDesktopModule> {
@@ -755,6 +1056,7 @@ async function startOssBootstrap(
   const bootstrapPath = `${rootDir}/bootstrap.sh`;
   const launcherPath = `${rootDir}/launch-terminal.sh`;
   const logPath = `${rootDir}/bootstrap.log`;
+  const completionPath = `${rootDir}/completion.json`;
   const nestedObserverPath = `${rootDir}/repo/.mimetic/runs/nested-${token}/observer/index.html`;
   const title = `Mimetic ${assignment.index} ${assignment.repo}`;
   const baseTail = [
@@ -762,6 +1064,7 @@ async function startOssBootstrap(
     `sandbox: ${desktop.sandboxId}`,
     `remote package: ${localPackage ? remotePackagePath : "npm:mimetic-cli fallback"}`,
     `bootstrap: ${bootstrapPath}`,
+    `completion: ${completionPath}`,
     `log: ${logPath}`,
     `nested observer: ${nestedObserverPath}`
   ].join("\n");
@@ -782,6 +1085,7 @@ async function startOssBootstrap(
 
     const bootstrapScript = buildRemoteBootstrapScript({
       assignment,
+      completionPath,
       logPath,
       nestedObserverPath,
       rootDir,
@@ -813,6 +1117,7 @@ async function startOssBootstrap(
 
     return {
       codexMode: "tui-attempted",
+      completionPath,
       launcherPath,
       logPath,
       mimeticPackageUploaded: Boolean(localPackage),
@@ -827,6 +1132,7 @@ async function startOssBootstrap(
   } catch (error) {
     return {
       codexMode: "tui-attempted",
+      completionPath,
       launcherPath,
       logPath,
       mimeticPackageUploaded: Boolean(localPackage),
@@ -843,6 +1149,7 @@ async function startOssBootstrap(
 
 function buildRemoteBootstrapScript(args: {
   assignment: OssMetaLabAssignment;
+  completionPath: string;
   logPath: string;
   nestedObserverPath: string;
   remotePackagePath?: string;
@@ -858,11 +1165,65 @@ export MIMETIC_PUBLIC_SAFE=1
 ROOT_DIR=${shellQuote(args.rootDir)}
 APP_DIR="$ROOT_DIR/repo"
 LOG_PATH=${shellQuote(args.logPath)}
+COMPLETION_PATH=${shellQuote(args.completionPath)}
 NESTED_OBSERVER=${shellQuote(args.nestedObserverPath)}
 REMOTE_PACKAGE=${args.remotePackagePath ? shellQuote(args.remotePackagePath) : "''"}
 mkdir -p "$ROOT_DIR"
 touch "$LOG_PATH"
 exec > >(tee -a "$LOG_PATH") 2>&1
+NESTED_VERIFY_STATUS=not_run
+
+write_completion() {
+  local status="$1"
+  local reason="$2"
+  local exit_code="$3"
+  local nested_observer_present=false
+  if [[ -f "$NESTED_OBSERVER" ]]; then
+    nested_observer_present=true
+  fi
+
+  node - "$COMPLETION_PATH" "$LOG_PATH" "$status" "$reason" "$exit_code" "$nested_observer_present" "$NESTED_VERIFY_STATUS" <<'NODE' || true
+const fs = require("node:fs");
+const [
+  completionPath,
+  logPath,
+  status,
+  reason,
+  exitCode,
+  nestedObserverPresent,
+  nestedVerifyStatus
+] = process.argv.slice(2);
+const rawTail = fs.existsSync(logPath)
+  ? fs.readFileSync(logPath, "utf8").split(/\\r?\\n/).slice(-80).join("\\n")
+  : "";
+const redactedTail = rawTail
+  .replace(/sk-[A-Za-z0-9_-]{12,}/g, "[redacted-openai-key]")
+  .replace(/e2b_[A-Za-z0-9_-]{12,}/g, "[redacted-e2b-key]")
+  .replace(/gh[pousr]_[A-Za-z0-9_]{12,}/g, "[redacted-github-token]");
+fs.writeFileSync(completionPath, JSON.stringify({
+  schema: "mimetic.oss-meta-bootstrap-completion.v1",
+  status,
+  reason,
+  exitCode: Number(exitCode),
+  nestedObserverPresent: nestedObserverPresent === "true",
+  nestedVerifyStatus,
+  logTail: redactedTail,
+  completedAt: new Date().toISOString()
+}, null, 2) + "\\n");
+NODE
+}
+
+finish() {
+  local exit_code="$?"
+  trap - EXIT
+  if [[ "$exit_code" -eq 0 ]]; then
+    write_completion "passed" "Nested Mimetic proof completed and nested Observer path was checked." "$exit_code"
+  else
+    write_completion "failed" "Bootstrap exited before nested Mimetic proof completed." "$exit_code"
+  fi
+  exit "$exit_code"
+}
+trap finish EXIT
 
 echo "== mimetic oss meta-lab bootstrap =="
 echo "repo=${args.assignment.repo}"
@@ -938,7 +1299,12 @@ npx mimetic init --yes
 echo
 echo "== nested mimetic proof =="
 npx mimetic run --dry-run --run-id ${shellQuote(runId)}
-npx mimetic verify --run latest
+if npx mimetic verify --run latest; then
+  NESTED_VERIFY_STATUS=passed
+else
+  NESTED_VERIFY_STATUS=failed
+  exit 1
+fi
 npx mimetic watch --run latest --detach --no-open
 
 echo
@@ -1070,6 +1436,7 @@ function shellQuote(value: string): string {
 function formatLiveDesktopForResult(desktop: OssMetaLabLiveDesktop): OssMetaLabResult["sandboxes"][number] {
   return {
     ...(desktop.bootstrap ? { bootstrapStatus: desktop.bootstrap.status } : {}),
+    ...(desktop.completion ? { completionReason: desktop.completion.reason, completionStatus: desktop.completion.status } : {}),
     repo: desktop.repo,
     ...(desktop.sandboxId ? { sandboxId: desktop.sandboxId } : {}),
     streamId: desktop.streamId,
@@ -1088,6 +1455,23 @@ function readPositiveInt(value: string | undefined, fallback: number): number {
 
   const parsed = Number.parseInt(value, 10);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readNonNegativeInt(value: string | undefined, fallback: number): number {
+  if (!value || !/^\d+$/.test(value)) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+async function wait(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return;
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function compactError(error: unknown): string {

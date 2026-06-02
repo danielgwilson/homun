@@ -21,10 +21,22 @@ export type RunSimulationStatus =
   | "queued"
   | "preparing"
   | "running"
+  | "passed"
   | "complete"
   | "blocked"
+  | "timed_out"
   | "failed"
   | "contract_proof_only";
+
+export interface RunStreamCompletion {
+  checkedAt: string;
+  exitCode?: number;
+  logTail?: string;
+  nestedObserverPresent?: boolean;
+  nestedVerifyPassed?: boolean;
+  reason: string;
+  status: "running" | "passed" | "failed" | "blocked" | "timed_out";
+}
 
 export interface RunSimulation {
   id: string;
@@ -80,6 +92,7 @@ export interface RunStream {
     state: "not_connected" | "connecting" | "watching";
     contract: string;
   };
+  completion?: RunStreamCompletion;
   artifacts: Array<{
     label: string;
     path: string;
