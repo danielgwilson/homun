@@ -66,7 +66,7 @@ describe("observer rendering", () => {
       expect(html).toContain("tile-grid");
       expect(html).toContain("focus-rail");
       expect(html).toContain("history-panel");
-      expect(html).toContain("synthetic-browser");
+      expect(html).toContain("live-waiting-surface");
       expect(html).toContain("terminal-surface");
 
       const data = JSON.parse(

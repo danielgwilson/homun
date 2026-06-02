@@ -672,7 +672,7 @@ a { color: inherit; }
 .tile .media-surface > img { pointer-events: none; }
 
 .terminal-surface,
-.synthetic-browser,
+.live-waiting-surface,
 .synthetic-codex,
 .placeholder-surface {
   width: 100%;
@@ -746,7 +746,6 @@ a { color: inherit; }
   overflow-wrap: anywhere;
 }
 
-.synthetic-browser,
 .synthetic-codex,
 .placeholder-surface {
   background: #101010;
@@ -754,7 +753,6 @@ a { color: inherit; }
   color: #181b1a;
 }
 
-.browser-frame,
 .codex-frame {
   height: 100%;
   border-radius: 8px;
@@ -765,7 +763,6 @@ a { color: inherit; }
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-.browser-chrome,
 .codex-chrome {
   height: 30px;
   display: flex;
@@ -779,6 +776,71 @@ a { color: inherit; }
   color: #59645f;
 }
 
+.live-waiting-surface {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #020202;
+  color: var(--obs-fg-2);
+  font-family: var(--mono);
+}
+
+.live-waiting-surface::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(63, 113, 250, 0.12), transparent 34%),
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: auto, 100% 28px;
+  opacity: 0.7;
+}
+
+.live-waiting-inner {
+  position: relative;
+  z-index: 1;
+  width: min(360px, calc(100% - 32px));
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+.live-spinner {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-top-color: var(--obs-blue);
+  border-radius: 50%;
+  animation: live-spin 1s linear infinite;
+}
+
+.live-waiting-title {
+  color: var(--obs-fg-1);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.live-waiting-url {
+  max-width: 100%;
+  color: var(--obs-fg-3);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-waiting-status {
+  max-width: 100%;
+  color: var(--obs-fg-2);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .chrome-dot {
   width: 7px;
   height: 7px;
@@ -786,72 +848,11 @@ a { color: inherit; }
   background: #c9d0ca;
 }
 
-.browser-url,
 .codex-url {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.browser-page {
-  padding: 18px;
-  display: grid;
-  gap: 12px;
-  align-content: start;
-  background:
-    linear-gradient(90deg, rgba(63, 113, 250, 0.08) 1px, transparent 1px),
-    linear-gradient(rgba(63, 113, 250, 0.08) 1px, transparent 1px),
-    #fbfcf7;
-  background-size: 18px 18px;
-}
-
-.page-kicker {
-  font-family: var(--mono);
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: #3f71fa;
-}
-
-.page-head {
-  font-size: 22px;
-  line-height: 1.05;
-  max-width: 360px;
-  color: #111;
-}
-
-.page-line {
-  height: 9px;
-  border-radius: 20px;
-  background: #d9ded8;
-}
-
-.page-line.short { width: 54%; }
-.page-line.mid { width: 72%; }
-
-.page-controls {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.page-input {
-  height: 30px;
-  border: 1px solid #d8ded8;
-  border-radius: 6px;
-  background: white;
-}
-
-.page-button {
-  justify-self: start;
-  margin-top: 4px;
-  padding: 8px 14px;
-  border-radius: 20px;
-  background: #111;
-  color: white;
-  font-size: 10px;
 }
 
 .codex-body {
@@ -1290,6 +1291,10 @@ a { color: inherit; }
   0%, 100% { transform: scale(1); opacity: 0.65; }
   50% { transform: scale(1.35); opacity: 1; }
 }
+
+@keyframes live-spin {
+  to { transform: rotate(360deg); }
+}
 `;
 }
 
@@ -1677,27 +1682,23 @@ export function observerClientJs(): string {
 
   function appendBrowser(surface, stream) {
     var outer = document.createElement("div");
-    outer.className = "synthetic-browser";
-    var frame = document.createElement("div");
-    frame.className = "browser-frame";
-    var chrome = document.createElement("div");
-    chrome.className = "browser-chrome";
-    chrome.append(dot(), dot(), dot());
-    var url = document.createElement("span");
-    url.className = "browser-url";
-    url.textContent = stream.ui && stream.ui.route ? stream.ui.route : "local.app/first-run";
-    chrome.append(url);
-    var page = document.createElement("div");
-    page.className = "browser-page";
-    var kicker = document.createElement("div");
-    kicker.className = "page-kicker";
-    kicker.textContent = stream.ui && stream.ui.state ? stream.ui.state : "synthetic viewport";
-    var head = document.createElement("div");
-    head.className = "page-head";
-    head.textContent = stream.label;
-    page.append(kicker, head, line("short"), line("mid"), line(""), controls(), button("Continue"));
-    frame.append(chrome, page);
-    outer.append(frame);
+    outer.className = "live-waiting-surface";
+    var inner = document.createElement("div");
+    inner.className = "live-waiting-inner";
+    var spinner = document.createElement("div");
+    spinner.className = "live-spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    var title = document.createElement("div");
+    title.className = "live-waiting-title";
+    title.textContent = stream.status === "contract_proof_only" ? "Contract proof only" : "Waiting for live desktop";
+    var url = document.createElement("div");
+    url.className = "live-waiting-url";
+    url.textContent = stream.ui && stream.ui.route ? stream.ui.route : stream.label;
+    var status = document.createElement("div");
+    status.className = "live-waiting-status";
+    status.textContent = stream.sim.currentStep || stream.summary || stream.statusLabel || "Live surface not connected yet.";
+    inner.append(spinner, title, url, status);
+    outer.append(inner);
     surface.append(outer);
   }
 
@@ -2220,32 +2221,6 @@ export function observerClientJs(): string {
   function dot() {
     var node = document.createElement("span");
     node.className = "chrome-dot";
-    return node;
-  }
-
-  function line(className) {
-    var node = document.createElement("div");
-    node.className = "page-line " + className;
-    return node;
-  }
-
-  function controls() {
-    var wrap = document.createElement("div");
-    wrap.className = "page-controls";
-    wrap.append(input(), input(), input(), input());
-    return wrap;
-  }
-
-  function input() {
-    var node = document.createElement("div");
-    node.className = "page-input";
-    return node;
-  }
-
-  function button(text) {
-    var node = document.createElement("div");
-    node.className = "page-button";
-    node.textContent = text;
     return node;
   }
 
