@@ -14,7 +14,8 @@ without explicit approval in the current context.
 - License: MIT
 - Repository: `https://github.com/danielgwilson/mimetic-cli`
 - npm access: public via `publishConfig.access`
-- npm contents: compiled `dist`, public docs directories, `skills/`,
+- npm contents: compiled `dist`, public docs directories, including ramp and
+  current-goal docs, `skills/`,
   `README.md`, `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`, and
   `package.json`
 - GitHub Actions publish workflow: `.github/workflows/publish.yml`
@@ -98,9 +99,11 @@ pnpm pack:dry-run
 git diff --check
 ```
 
-`pnpm public-surface:scan` fails on common secret tokens, absolute local user
-paths, local workspace paths, non-noreply commit email metadata, and known
-private upstream system names.
+`pnpm public-surface:scan` scans tracked files plus the npm dry-run payload,
+including built `dist/` output. It fails on common secret tokens, absolute local
+user paths, local workspace paths, non-noreply durable commit email metadata,
+known private upstream system names, and binary public assets that are not
+explicitly allowlisted by SHA-256.
 
 ## Tarball Inspection
 
@@ -115,7 +118,10 @@ pnpm pack:dry-run
 
 The tarball must not include `.env*`, `.mimetic/`, generated run bundles,
 private screenshots, raw transcripts, `.npmrc`, tests, fixtures, internal
-operations/ramp notes, or local runtime caches.
+operations notes, local runtime caches, or private operator packets. Public
+`docs/ramp/`, `docs/goals/`, and repo-local `AGENTS.md` files are allowed when
+they are synthetic, durable, and public-safe. Public image assets must remain on
+the scanner allowlist and keep their approved checksum.
 
 ## Publish Procedure
 
