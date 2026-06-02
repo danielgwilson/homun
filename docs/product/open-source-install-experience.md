@@ -10,8 +10,8 @@ Drop Mimetic into an app and let a coding agent set up realistic persona
 simulations, run them safely, watch them in a polished observer, and turn
 friction into public-safe issue drafts.
 
-The first experience should feel as easy as Northstar's `ui-sim`, but with an
-open-source-safe package shape:
+The first experience should feel like a mature one-command simulation harness,
+but with an open-source-safe package shape:
 
 ```bash
 npm i -D mimetic-cli
@@ -46,7 +46,7 @@ The agent skill owns installation guidance and repo adaptation:
 npx skills add danielgwilson/mimetic-cli
 ```
 
-Current repo-owned draft: [`docs/skill/mimetic-cli/SKILL.md`](../skill/mimetic-cli/SKILL.md).
+Installable repo skill: [`skills/mimetic-cli/SKILL.md`](../../skills/mimetic-cli/SKILL.md).
 
 The skill should teach the user's coding agent how to:
 
