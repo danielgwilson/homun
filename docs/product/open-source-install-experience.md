@@ -43,7 +43,7 @@ The npm package owns executable behavior:
 The agent skill owns installation guidance and repo adaptation:
 
 ```bash
-npx skills add danielgwilson/mimetic-cli
+npx skills add danielgwilson/mimetic-cli --skill mimetic-cli
 ```
 
 Installable repo skill: [`skills/mimetic-cli/SKILL.md`](../../skills/mimetic-cli/SKILL.md).

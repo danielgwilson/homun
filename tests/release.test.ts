@@ -28,7 +28,21 @@ describe("release readiness", () => {
     expect(packageJson.homepage).toBe("https://github.com/danielgwilson/mimetic-cli#readme");
     expect(packageJson.bugs?.url).toBe("https://github.com/danielgwilson/mimetic-cli/issues");
     expect(packageJson.keywords).toContain("persona-simulation");
-    expect(packageJson.files).toEqual(["dist", "docs", "skills", "README.md", "LICENSE"]);
+    expect(packageJson.files).toEqual([
+      "dist",
+      "docs/architecture",
+      "docs/assets",
+      "docs/contracts",
+      "docs/principles",
+      "docs/product",
+      "docs/release",
+      "docs/roadmap",
+      "skills",
+      "README.md",
+      "LICENSE",
+      "SECURITY.md",
+      "CONTRIBUTING.md"
+    ]);
     expect(packageJson.scripts.prepack).toBe("pnpm build");
     expect(packageJson.scripts["public-surface:scan"]).toBe("node scripts/public-surface-scan.mjs");
     expect(packageJson.scripts["skill:check"]).toBe("DISABLE_TELEMETRY=1 npx skills add . --list");
@@ -54,6 +68,7 @@ describe("release readiness", () => {
     expect(readiness).toContain("No agent should run that command without explicit human approval");
     expect(readiness).toContain("`.mimetic/`");
     expect(readiness).toContain("`.npmrc`");
+    expect(readiness).toContain("`docs/release/`");
   });
 
   it("ships the npm README screenshot asset", async () => {
