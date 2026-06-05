@@ -214,12 +214,16 @@ describe("OSS lab command", () => {
       expect(calls).toHaveLength(1);
       expect(calls[0]?.file).toBe("git");
       expect(calls[0]?.args).toEqual([
+        "-c",
+        "credential.helper=",
         "ls-remote",
         "--exit-code",
         "https://github.com/danielgwilson/nobg.git",
         "HEAD"
       ]);
       expect(calls[0]?.env.GIT_ASKPASS).toContain("git-askpass-");
+      expect(calls[0]?.env.GIT_CONFIG_GLOBAL).toBe("/dev/null");
+      expect(calls[0]?.env.GIT_CONFIG_NOSYSTEM).toBe("1");
       expect(calls[0]?.env.GIT_TERMINAL_PROMPT).toBe("0");
       expect(calls[0]?.env.MIMETIC_GITHUB_TOKEN_RUNTIME).toBe("github-token-test");
     } finally {
@@ -234,16 +238,20 @@ describe("OSS lab command", () => {
       throw new Error("Missing assignment.");
     }
     let calls = 0;
+    const envs: NodeJS.ProcessEnv[] = [];
 
     try {
       const result = await preflightOssMetaRepoAccess({
         assignments: [assignment],
         cwd,
         env: {
+          GIT_ASKPASS: "must-not-leak-to-fallback",
+          GIT_CONFIG_COUNT: "1",
           GITHUB_TOKEN: "bad-token-test"
         },
         execFileImpl: async (_file, _args, options) => {
           calls += 1;
+          envs.push(options.env ?? {});
           if (options.env?.MIMETIC_GITHUB_TOKEN_RUNTIME) {
             throw new Error("token auth rejected");
           }
@@ -257,6 +265,13 @@ describe("OSS lab command", () => {
         reason: "GitHub token auth failed, but unauthenticated public clone access passed.",
         tokenPresent: true
       })]);
+      expect(envs[1]?.GIT_ASKPASS).toBe("false");
+      expect(envs[1]?.SSH_ASKPASS).toBe("false");
+      expect(envs[1]?.GIT_CONFIG_GLOBAL).toBe("/dev/null");
+      expect(envs[1]?.GIT_CONFIG_NOSYSTEM).toBe("1");
+      expect(envs[1]?.GIT_CONFIG_COUNT).toBeUndefined();
+      expect(envs[1]?.GITHUB_TOKEN).toBeUndefined();
+      expect(envs[1]?.MIMETIC_GITHUB_TOKEN_RUNTIME).toBeUndefined();
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -488,8 +503,9 @@ describe("OSS lab command", () => {
       expect(script).toContain('CODEX_API_KEY="\\$MIMETIC_PRIVATE_CODEX_API_KEY" CODEX_ACCESS_TOKEN="\\$MIMETIC_PRIVATE_CODEX_ACCESS_TOKEN" timeout "\\$ACTOR_TIMEOUT_SECONDS" bash -lc "\\$CODEX_COMMAND"');
       expect(script).toContain('CODEX_ACCESS_TOKEN="\\$MIMETIC_PRIVATE_CODEX_ACCESS_TOKEN" timeout "\\$ACTOR_TIMEOUT_SECONDS" bash -lc "\\$CODEX_COMMAND"');
       expect(script).toContain('MIMETIC_PRIVATE_CODEX_API_KEY="$MIMETIC_PRIVATE_CODEX_API_KEY" MIMETIC_PRIVATE_CODEX_ACCESS_TOKEN="$MIMETIC_PRIVATE_CODEX_ACCESS_TOKEN" nohup bash "$actor_script"');
-      expect(script).toContain('MIMETIC_GITHUB_TOKEN_RUNTIME="$MIMETIC_PRIVATE_GITHUB_TOKEN" git clone');
+      expect(script).toContain('MIMETIC_GITHUB_TOKEN_RUNTIME="$MIMETIC_PRIVATE_GITHUB_TOKEN" git -c credential.helper= clone');
       expect(script).toContain("clone_auth=token_failed retry=anonymous_public_clone");
+      expect(script).toContain("GIT_ASKPASS=false SSH_ASKPASS=false GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone");
       expect(script).toContain("clone_auth=anonymous");
       expect(script).not.toContain("command -v codex");
       expect(script).not.toContain("--ask-for-approval");

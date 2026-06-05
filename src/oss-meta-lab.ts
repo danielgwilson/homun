@@ -345,7 +345,7 @@ async function createGitHubAskPassEnv(root: string, env: NodeJS.ProcessEnv): Pro
 
   const token = githubTokenFromEnv(env);
   return {
-    ...env,
+    ...gitCredentialIsolatedEnv(env),
     GIT_ASKPASS: askPassPath,
     GIT_TERMINAL_PROMPT: "0",
     ...(token ? { MIMETIC_GITHUB_TOKEN_RUNTIME: token } : {})
@@ -353,16 +353,31 @@ async function createGitHubAskPassEnv(root: string, env: NodeJS.ProcessEnv): Pro
 }
 
 function gitEnvWithoutGitHubToken(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const {
-    GH_TOKEN: _ghToken,
-    GITHUB_PAT: _githubPat,
-    GITHUB_TOKEN: _githubToken,
-    GIT_ASKPASS: _gitAskpass,
-    MIMETIC_GITHUB_TOKEN_RUNTIME: _runtimeToken,
-    ...rest
-  } = env;
   return {
-    ...rest,
+    ...gitCredentialIsolatedEnv(env),
+    GIT_ASKPASS: "false",
+    SSH_ASKPASS: "false",
+    GIT_TERMINAL_PROMPT: "0"
+  };
+}
+
+function gitCredentialIsolatedEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const isolated: NodeJS.ProcessEnv = { ...env };
+  for (const key of Object.keys(isolated)) {
+    if (key.startsWith("GIT_CONFIG_")) {
+      delete isolated[key];
+    }
+  }
+  delete isolated.GH_TOKEN;
+  delete isolated.GITHUB_PAT;
+  delete isolated.GITHUB_TOKEN;
+  delete isolated.GIT_ASKPASS;
+  delete isolated.MIMETIC_GITHUB_TOKEN_RUNTIME;
+  delete isolated.SSH_ASKPASS;
+  return {
+    ...isolated,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0"
   };
 }
@@ -374,7 +389,7 @@ async function runGitRepoAccessProbe(
   env: NodeJS.ProcessEnv,
   sourceEnv: NodeJS.ProcessEnv
 ): Promise<void> {
-  await execImpl("git", ["ls-remote", "--exit-code", repoUrl, "HEAD"], {
+  await execImpl("git", ["-c", "credential.helper=", "ls-remote", "--exit-code", repoUrl, "HEAD"], {
     cwd,
     env,
     maxBuffer: 256 * 1024,
@@ -3950,7 +3965,7 @@ chmod 700 "$ASKPASS"
 clone_repo() {
   local repo_url=${shellQuote(repoUrl)}
   if [[ -n "$MIMETIC_PRIVATE_GITHUB_TOKEN" ]]; then
-    if GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 MIMETIC_GITHUB_TOKEN_RUNTIME="$MIMETIC_PRIVATE_GITHUB_TOKEN" git clone --depth=1 "$repo_url" "$APP_DIR"; then
+    if GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 MIMETIC_GITHUB_TOKEN_RUNTIME="$MIMETIC_PRIVATE_GITHUB_TOKEN" git -c credential.helper= clone --depth=1 "$repo_url" "$APP_DIR"; then
       echo "clone_auth=token"
       return 0
     fi
@@ -3958,7 +3973,7 @@ clone_repo() {
     rm -rf "$APP_DIR"
   fi
 
-  GIT_TERMINAL_PROMPT=0 git clone --depth=1 "$repo_url" "$APP_DIR"
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_ASKPASS=false SSH_ASKPASS=false GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone --depth=1 "$repo_url" "$APP_DIR"
   echo "clone_auth=anonymous"
 }
 clone_repo
