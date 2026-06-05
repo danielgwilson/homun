@@ -1259,7 +1259,19 @@ describe("OSS lab command", () => {
           },
           completion: {
             actorLastMessageTail: "Configured Mimetic for maintainer/private-app in sandbox-private-123 and opened the private-app Observer.",
-            actorLogTail: "git clone https://github.com/maintainer/private-app.git\nprivate-app setup complete in sandbox-private-123",
+            actorLogTail: [
+              "git clone https://github.com/maintainer/private-app.git",
+              "diff --git a/src/private-flow.ts b/src/private-flow.ts",
+              "index abc123..def456 100644",
+              "--- a/src/private-flow.ts",
+              "+++ b/src/private-flow.ts",
+              "@@ -1,2 +1,3 @@",
+              "-const secretFlow = 'private-app';",
+              "+const secretFlow = 'private-app-updated';",
+              "tokens used",
+              "12,345",
+              "private-app setup complete in sandbox-private-123"
+            ].join("\n"),
             appStatus: "running",
             appUrl: "http://127.0.0.1:3000",
             checkedAt: "2026-06-02T10:31:00.000Z",
@@ -1272,6 +1284,11 @@ describe("OSS lab command", () => {
           },
           repo: "repo-01",
           sandboxId: "sandbox-private-123",
+          screenshot: {
+            capturedAt: "2026-06-02T10:31:05.000Z",
+            observerUrl: "../screenshots/oss-01-desktop.png",
+            path: "screenshots/oss-01-desktop.png"
+          },
           simId: assignments[0]?.simId ?? "oss-01",
           streamId: assignments[0]?.streamId ?? "oss-01-desktop",
           url: "https://stream.example/auth-key-should-not-persist"
@@ -1287,6 +1304,9 @@ describe("OSS lab command", () => {
     expect(serialized).toContain("repo-01");
     expect(serialized).not.toContain("maintainer/private-app");
     expect(serialized).not.toContain("private-app");
+    expect(serialized).not.toContain("diff --git");
+    expect(serialized).not.toContain("secretFlow");
+    expect(serialized).toContain("[redacted-source-diff]");
     expect(serialized).not.toContain("sandbox-private-123");
     expect(serialized).not.toContain("sandboxId");
     expect(serialized).not.toContain("stream.example");
@@ -1294,5 +1314,14 @@ describe("OSS lab command", () => {
     expect(bundle.streams[0]?.completion?.actorLastMessageTail).toContain("[redacted-provider-runtime-id]");
     expect(bundle.streams[0]?.url).toBeUndefined();
     expect(bundle.streams[0]?.label).toBe("E2B desktop - repo-01");
+    expect(bundle.streams[0]).toMatchObject({
+      embed: { kind: "screenshot", url: "../screenshots/oss-01-desktop.png" },
+      ui: { screenshotUrl: "../screenshots/oss-01-desktop.png" }
+    });
+    expect(bundle.streams[0]?.artifacts).toContainEqual({
+      label: "desktop screenshot",
+      path: "screenshots/oss-01-desktop.png",
+      kind: "screenshot"
+    });
   });
 });

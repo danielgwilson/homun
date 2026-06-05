@@ -1100,7 +1100,7 @@ export async function runOssMetaLab(options: OssMetaLabOptions): Promise<OssMeta
 
   const artifactRoot = path.join(cwd, ".mimetic", "runs", runId);
   const createdAt = new Date().toISOString();
-  const persistScreenshots = !redactRepoNames;
+  const persistScreenshots = liveRequested;
   let liveDesktops: OssMetaLabLiveDesktop[] = [];
   let substrateMissingKeys = [...missingKeys];
   await mkdir(artifactRoot, { recursive: true });
@@ -1262,10 +1262,8 @@ export async function runOssMetaLab(options: OssMetaLabOptions): Promise<OssMeta
   }
 
   if (persistScreenshots) {
-    const screenshotSummary = await captureLiveDesktopScreenshots(artifactRoot, liveDesktops);
+    const screenshotSummary = await captureLiveDesktopScreenshots(artifactRoot, liveDesktops, { redactRepoNames });
     warnings.push(...screenshotSummary.warnings);
-  } else if (liveDesktops.some((desktop) => desktop.url)) {
-    warnings.push("Skipped persistent desktop screenshots because repo labels are redacted; live stream URLs remain runtime-only.");
   }
   const actorEvidenceSummary = await writeActorEvidenceArtifacts(artifactRoot, liveDesktops, {
     assignments,
@@ -2627,7 +2625,8 @@ async function readRemoteLogTail(
 
 async function captureLiveDesktopScreenshots(
   artifactRoot: string,
-  liveDesktops: OssMetaLabLiveDesktop[]
+  liveDesktops: OssMetaLabLiveDesktop[],
+  options: { redactRepoNames: boolean } = { redactRepoNames: false }
 ): Promise<{ warnings: string[] }> {
   const candidates = liveDesktops.filter((desktop) => desktop.desktop && desktop.url);
   if (candidates.length === 0) {
@@ -2660,13 +2659,16 @@ async function captureLiveDesktopScreenshots(
         path: path.join("screenshots", fileName)
       };
     } catch (error) {
-      warnings.push(`Screenshot capture failed for ${desktop.repo}: ${compactError(error)}`);
+      const laneLabel = options.redactRepoNames ? desktop.streamId : desktop.repo;
+      warnings.push(`Screenshot capture failed for ${laneLabel}: ${compactError(error)}`);
     }
   }));
 
   const capturedCount = liveDesktops.filter((desktop) => desktop.screenshot).length;
   if (capturedCount > 0) {
-    warnings.push(`Captured ${capturedCount}/${candidates.length} E2B desktop screenshot fallback${candidates.length === 1 ? "" : "s"}.`);
+    warnings.push(options.redactRepoNames
+      ? `Captured ${capturedCount}/${candidates.length} local-only redacted E2B desktop screenshot fallback${candidates.length === 1 ? "" : "s"}; do not publish private screenshots.`
+      : `Captured ${capturedCount}/${candidates.length} E2B desktop screenshot fallback${candidates.length === 1 ? "" : "s"}.`);
   }
 
   return { warnings };
@@ -2772,7 +2774,7 @@ function renderPublicSafeActorEvidenceText(
   text: string,
   redaction?: { providerRuntimeId?: string | undefined; repo?: string | undefined }
 ): string {
-  const sanitized = sanitizeRemoteLog(redactPrivateRuntimeMentions(text, redaction));
+  const sanitized = sanitizeRemoteLog(redactPrivateActorEvidence(text, redaction));
   return [
     `schema: mimetic.oss-meta-actor-evidence.v1`,
     `kind: ${kind}`,
@@ -2804,14 +2806,49 @@ function redactCompletionRepoMentions(completion: OssMetaLabCompletion, repo: st
   const redaction = { providerRuntimeId, repo };
   return {
     ...completion,
-    ...(completion.actorLogTail === undefined ? {} : { actorLogTail: redactPrivateRuntimeMentions(completion.actorLogTail, redaction) }),
-    ...(completion.actorLastMessageTail === undefined ? {} : { actorLastMessageTail: redactPrivateRuntimeMentions(completion.actorLastMessageTail, redaction) }),
+    ...(completion.actorLogTail === undefined ? {} : { actorLogTail: redactPrivateActorEvidence(completion.actorLogTail, redaction) }),
+    ...(completion.actorLastMessageTail === undefined ? {} : { actorLastMessageTail: redactPrivateActorEvidence(completion.actorLastMessageTail, redaction) }),
     ...(completion.appReason === undefined ? {} : { appReason: redactPrivateRuntimeMentions(completion.appReason, redaction) }),
     ...(completion.logTail === undefined ? {} : { logTail: redactPrivateRuntimeMentions(completion.logTail, redaction) }),
     reason: redactPrivateRuntimeMentions(completion.reason, redaction),
     ...(completion.setupQuality === undefined ? {} : { setupQuality: redactSetupQualityRepoMentions(completion.setupQuality, repo) }),
     ...(completion.visualReason === undefined ? {} : { visualReason: redactPrivateRuntimeMentions(completion.visualReason, redaction) })
   };
+}
+
+function redactPrivateActorEvidence(text: string, redaction: { providerRuntimeId?: string | undefined; repo?: string | undefined } | undefined): string {
+  const redacted = redactPrivateRuntimeMentions(text, redaction);
+  return redaction?.repo ? stripSourceDiffBlocks(redacted) : redacted;
+}
+
+function stripSourceDiffBlocks(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const output: string[] = [];
+  let inDiff = false;
+  let emittedMarker = false;
+
+  for (const line of lines) {
+    if (/^diff --git\b/.test(line)) {
+      if (!emittedMarker) {
+        output.push("[redacted-source-diff]");
+        emittedMarker = true;
+      }
+      inDiff = true;
+      continue;
+    }
+
+    if (inDiff) {
+      if (/^(tokens used|Installed\b|Mimetic\b|Created personas:|Created browser scenarios:|Product journeys covered:|Observed friction|Evidence paths:|Verification:|If you want\b)/.test(line)) {
+        inDiff = false;
+      } else {
+        continue;
+      }
+    }
+
+    output.push(line);
+  }
+
+  return output.join("\n");
 }
 
 function redactSetupQualityRepoMentions(snapshot: RunSetupQualitySnapshot, repo: string | undefined): RunSetupQualitySnapshot {
