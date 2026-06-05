@@ -12,7 +12,7 @@ describe("lab app runner plan", () => {
       lockfiles: ["pnpm-lock.yaml"],
       packageJson: {
         dependencies: { next: "^15.0.0", react: "^19.0.0" },
-        packageManager: "pnpm@10.26.2",
+        packageManager: "pnpm@11.5.2",
         scripts: {
           build: "next build",
           dev: "next dev"
