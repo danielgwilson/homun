@@ -34,6 +34,13 @@ describe("claudeSessionToActorTrace", () => {
     expect(trace.tokenUsage).toEqual({ input: 200, output: 80, total: 280, costUsd: 0.0034 });
   });
 
+  it("finds the init message by subtype even when hook system messages precede it", () => {
+    // Live proof: real sessions emit system/hook_started + system/hook_response
+    // before system/init; matching the first system message lost model/session.
+    expect(trace.ids.model).toBe("synthetic-model");
+    expect(trace.ids.sessionId).toBe("claude-session-1");
+  });
+
   it("projects assistant content blocks and tool results into items", () => {
     const kinds = new Set(trace.items.map((item) => item.kind));
     for (const kind of ["message", "reasoning", "tool_call"]) {

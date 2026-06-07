@@ -32,7 +32,9 @@ export type ClaudeContentBlock =
   | { type: "tool_result"; tool_use_id: string; is_error?: boolean };
 
 export type ClaudeMessage =
-  | { type: "system"; subtype: "init"; session_id?: string; model?: string }
+  // The SDK emits many system subtypes (init, hook_started, hook_response, ...).
+  // Only the init message carries model/session config; the rest are ignored.
+  | { type: "system"; subtype: string; session_id?: string; model?: string }
   | { type: "assistant"; message: { content: ClaudeContentBlock[] } }
   | { type: "user"; message: { content: ClaudeContentBlock[] | string } }
   | {
@@ -188,7 +190,9 @@ function claudeMessagesToActorItems(messages: ClaudeMessage[]): ActorTraceItem[]
  */
 export function claudeSessionToActorTrace(session: ClaudeSessionResult, persona: ActorPersonaRef): ActorTrace {
   const result = [...session.messages].reverse().find((message) => message.type === "result");
-  const init = session.messages.find((message) => message.type === "system");
+  // Match the init message by subtype: the SDK emits other system messages
+  // (hook_started/hook_response) first, and only init carries model/session.
+  const init = session.messages.find((message) => message.type === "system" && message.subtype === "init");
   const subtype: ClaudeResultSubtype = result?.type === "result" ? result.subtype : "error_during_execution";
   const status = claudeResultSubtypeToStatus(subtype);
   const sessionId = (result?.type === "result" ? result.session_id : undefined) ?? (init?.type === "system" ? init.session_id : undefined);

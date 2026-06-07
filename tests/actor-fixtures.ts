@@ -126,6 +126,10 @@ export function buildClaudeSession(): ClaudeSessionResult {
     completedAt: "2026-06-06T00:00:04.000Z",
     providerVersion: "0.3.168",
     messages: [
+      // Real sessions emit hook system messages BEFORE init; init alone carries
+      // model/session config. (Surfaced by the live proof.)
+      { type: "system", subtype: "hook_started", session_id: "claude-session-1" },
+      { type: "system", subtype: "hook_response", session_id: "claude-session-1" },
       { type: "system", subtype: "init", session_id: "claude-session-1", model: "synthetic-model" },
       {
         type: "assistant",
