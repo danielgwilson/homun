@@ -13,9 +13,6 @@ subject:
     fanout: 4
 actors:
   - type: codex-app-server
-    laneFocus:
-      id: code
-      label: Nested setup + run
 execution:
   target: e2b-desktop
 scenario:

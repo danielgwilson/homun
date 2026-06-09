@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { parseLabConfig, LAB_CONFIG_SCHEMA } from "../src/lab-config.js";
-import { selectLabBackend } from "../src/lab-engine.js";
+import { runLab, selectLabBackend } from "../src/lab-engine.js";
 
 const ROOT = process.cwd();
 const read = (rel: string) => readFileSync(path.join(ROOT, rel), "utf8");
@@ -38,45 +38,49 @@ describe("lab refactor structural necessity (rung 1)", () => {
   });
 });
 
-// RUNG 3 (expressiveness / no-overfit): brand-new lab compositions the engine never saw as a
-// built-in must work config-only — they parse and route with ZERO engine edits. If a new lab
-// needed code, the "general engine" would just be the three built-ins in disguise.
+// RUNG 3 (expressiveness / no-overfit): a brand-new composition the engine never saw as a
+// built-in must work config-only — parse + route with ZERO engine edits — AND the engine must
+// actually CONSUME the config, not merely route a label (otherwise a "3 kinds in disguise"
+// engine would pass an expressiveness test that never executes).
 describe("lab config expressiveness (rung 3)", () => {
-  it("a nobg-style migration lab (clone + e2b + two heterogeneous actors + mission + approval) parses and routes", () => {
+  it("a brand-new clone+e2b migration-style composition parses and routes config-only", () => {
     const result = parseLabConfig({
       schema: LAB_CONFIG_SCHEMA,
-      id: "nobg-migration",
-      title: "nobg bespoke-sim -> mimetic migration",
-      subject: { source: "clone", repos: ["danielgwilson/nobg"], clone: { depth: 1, fanout: 1 } },
-      actors: [
-        { type: "codex-exec", mission: "Remove the bespoke @nobg/ui-sim package and adopt mimetic." },
-        { type: "claude-agent-sdk", persona: "skeptical-power-user", mission: "Review the migration for dual-stack residue." }
-      ],
-      execution: { target: "e2b-desktop", concurrency: 1 },
-      policies: { redactRepos: true, noPush: true, approval: { mode: "pre-grant-allowlist", allow: ["pnpm install", "pnpm check"] } },
-      review: { scoring: "migration-boot-and-review" }
+      id: "migration-rehearsal",
+      title: "bespoke-sim to mimetic migration",
+      subject: { source: "clone", repos: ["example-org/private-app"], clone: { depth: 1, fanout: 1 } },
+      actors: [{ type: "codex-exec", mission: "Remove the bespoke UI sim package and adopt mimetic." }],
+      execution: { target: "e2b-desktop" },
+      policies: { redactRepos: true }
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // The composition routes to the meta (E2B desktop) backend purely from config — no new code.
+    // Routes to the E2B desktop backend purely from config — no new engine code.
     expect(selectLabBackend(result.config)).toBe("meta");
-    expect(result.config.actors.map((actor) => actor.type)).toEqual(["codex-exec", "claude-agent-sdk"]);
-    expect(result.config.policies?.approval?.mode).toBe("pre-grant-allowlist");
+    // The mission is forward-declared today and surfaced as a warning, never silently consumed.
+    expect(result.warnings.join(" ")).toContain("actors[0].mission");
   });
 
-  it("an app-url + computer-use browser lab (PR #2 shape) parses and routes config-only", () => {
-    const result = parseLabConfig({
+  it("synthetic behavior is a FUNCTION of config (actor count -> simCount), not just a parsed label", async () => {
+    const base = (count: number) => parseLabConfig({
       schema: LAB_CONFIG_SCHEMA,
-      id: "nobg-browser-user",
-      subject: { source: "app-url", url: "http://127.0.0.1:3000" },
-      actors: [{ type: "computer-use", persona: "synthetic-new-user", count: 2 }],
-      execution: { target: "e2b-desktop" }
+      id: "behavioral",
+      subject: { source: "this-repo" },
+      actors: [{ type: "synthetic-persona", count }],
+      scenario: { mode: "dry-run" }
     });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    // app-url subjects route through the synthetic/browser-proof path today; wiring the CUA actor
-    // is PR #2, but the config already expresses it with no schema change.
-    expect(selectLabBackend(result.config)).toBe("synthetic");
-    expect(result.config.subject.url).toBe("http://127.0.0.1:3000");
+    const two = base(2);
+    const five = base(5);
+    expect(two.ok && five.ok).toBe(true);
+    if (!two.ok || !five.ok) return;
+
+    const r2 = await runLab(two.config, { cwd: ROOT, runId: "behavioral-2", dryRun: true });
+    const r5 = await runLab(five.config, { cwd: ROOT, runId: "behavioral-5", dryRun: true });
+    expect(r2.backend).toBe("synthetic");
+    expect(r5.backend).toBe("synthetic");
+    if (r2.backend !== "synthetic" || r5.backend !== "synthetic") return;
+    // Proof the engine consumes the composition, not just routes 1 of 3 fixed backends.
+    expect(r2.result.simCount).toBe(2);
+    expect(r5.result.simCount).toBe(5);
   });
 });

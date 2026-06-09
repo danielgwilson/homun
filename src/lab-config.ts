@@ -1,19 +1,26 @@
 // mimetic.lab.v2 — a lab is a COMPOSITION over code primitives, not a hardcoded kind.
 //
-// The engine binds SUBJECT + ACTORS + EXECUTION + SCENARIO + POLICIES + REVIEW into a run.
-// `actors[].type` is resolved against the actor/sim registries at dispatch time, NOT
-// enumerated here — new actors extend the lab vocabulary by registering, which is the whole
-// point of the refactor (see docs/architecture/actor-contract.md, MEMORY: labs-as-config).
+// HONEST SCOPE (read before trusting field names): the engine today routes by
+// subject.source × execution.target and consumes a deliberately small set of fields:
+//   subject.source/repos/clone.{fanout,keep}, actors[0].count, execution.target +
+//   execution.desktop.codexAppServer, scenario.mode, policies.redactRepos, defaults.open.
+// Everything else (actors[].{type,mission,laneFocus,persona,model}, multi-actor fan-out,
+// execution timeouts/concurrency/resolution, scenario.ref/inline, review.*, personas[]) is
+// FORWARD-DECLARED for the next slice and NOT yet consumed — parseLabConfig emits a warning
+// listing any such field that is set, so `lab inspect` shows the truth. `actors[].type` is a
+// free-form label today; it is NOT resolved/validated against the actor registry yet.
 //
-// There is deliberately NO v1 compatibility: v1 had zero real users and a closed `kind` enum.
-// This is the clean, versioned replacement. Breaking schema changes bump the version honestly.
+// There is deliberately NO v1 compatibility: v1 had zero real users. Breaking schema changes
+// bump the version honestly.
 
 export const LAB_CONFIG_SCHEMA = "mimetic.lab.v2";
 
-const ID_PATTERN = /^[A-Za-z0-9_.-]+$/;
+// Must start alphanumeric so an id never collides with the path-vs-id resolver heuristic
+// (a leading "." or "/" is read as a file path; a leading "-" collides with CLI flags).
+const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
-/** Where the run acts: the host repo, a fresh clone, or a running app URL. */
-export type LabSubjectSource = "this-repo" | "clone" | "app-url";
+/** Where the run acts: the host repo, or a fresh clone. (app-url returns in a later slice.) */
+export type LabSubjectSource = "this-repo" | "clone";
 
 export interface LabSubjectClone {
   /** git clone depth; 1 (shallow) by default. */
@@ -29,48 +36,52 @@ export interface LabSubject {
   /** `clone`: one or more owner/repo slugs (public or authorized-private). */
   repos?: string[];
   clone?: LabSubjectClone;
-  /** `app-url`: an http(s) loopback URL the persona exercises. */
-  url?: string;
 }
 
 export interface LabActorLaneFocus {
   id?: string;
   label?: string;
-  /** Per-lane steer appended to the actor's mission. */
+  /** Per-lane steer appended to the actor's mission. FORWARD-DECLARED (PR #2). */
   instruction?: string;
 }
 
 export interface LabActor {
   /**
-   * Resolved at dispatch against the actor/sim registries (e.g. codex-app-server,
-   * codex-exec, claude-agent-sdk, computer-use, browser-persona). Validated there, not here.
+   * A free-form actor label. NOT yet resolved/validated against the actor registry — routing
+   * ignores it today (it lands as a dispatch key in the next slice). Built-ins use descriptive
+   * labels (e.g. synthetic-persona, mimetic-setup, codex-app-server).
    */
   type: string;
-  /** How many independent instances of this actor to run. */
+  /** Lane count. Consumed today only for the synthetic backend (actors[0].count → simCount). */
   count?: number;
-  /** Persona ref (id or path) the actor embodies/targets; inline personas via `personas`. */
+  /** FORWARD-DECLARED (PR #2). */
   persona?: string;
+  /** FORWARD-DECLARED (PR #2). */
   laneFocus?: LabActorLaneFocus;
-  /** Free-form mission for the actor — replaces the old hardcoded per-kind mission strings. */
+  /** Free-form mission. FORWARD-DECLARED (PR #2) — not yet threaded into the actor prompt. */
   mission?: string;
-  /** Optional model override for this actor. */
+  /** FORWARD-DECLARED (PR #2). */
   model?: string;
 }
 
 export type LabExecutionTarget = "local" | "e2b-desktop";
 
 export interface LabExecutionDesktop {
+  /** FORWARD-DECLARED (PR #2) — the desktop resolution is fixed today. */
   resolution?: [number, number];
+  /** FORWARD-DECLARED (PR #2). */
   sandboxTimeoutMs?: number;
-  /** Use the Codex app-server client mode for headed desktop actor surfaces. */
+  /** Use the Codex app-server client mode for headed desktop actor surfaces. Consumed (meta). */
   codexAppServer?: boolean;
 }
 
 export interface LabExecution {
   target?: LabExecutionTarget;
+  /** FORWARD-DECLARED (PR #2). */
   timeoutMs?: number;
+  /** FORWARD-DECLARED (PR #2). */
   completionTimeoutMs?: number;
-  /** Max concurrent lanes; defaults to the lane count. */
+  /** FORWARD-DECLARED (PR #2). */
   concurrency?: number;
   desktop?: LabExecutionDesktop;
 }
@@ -78,38 +89,25 @@ export interface LabExecution {
 export type LabScenarioMode = "dry-run" | "live";
 
 export interface LabScenario {
-  /** Reference a committed/ignored scenario by id or path. */
+  /** Reference a committed/ignored scenario by id or path. FORWARD-DECLARED (PR #2). */
   ref?: string;
-  /** Or inline the scenario body (mimetic.scenario.v1 shape). */
+  /** Or inline the scenario body. FORWARD-DECLARED (PR #2). */
   inline?: Record<string, unknown>;
-  /** dry-run = contract evidence (no provider spend); live = real run. */
+  /** dry-run = contract evidence (no provider spend); live = real run. Consumed. */
   mode?: LabScenarioMode;
 }
 
-export type LabApprovalMode = "auto-decline" | "pre-grant-allowlist" | "deny-all";
-
-export interface LabApprovalPolicy {
-  mode?: LabApprovalMode;
-  /** Allowed commands when mode is pre-grant-allowlist. */
-  allow?: string[];
-}
-
 export interface LabPolicies {
-  /** Redact target repo labels in durable artifacts (always true for private targets). */
+  /** Redact target repo labels in durable artifacts (always true for private targets). Consumed. */
   redactRepos?: boolean;
-  /** Named policy refs under mimetic/policies (or the ignored plane). */
-  redaction?: string;
-  network?: string;
-  credentials?: string;
-  approval?: LabApprovalPolicy;
-  /** Structurally guaranteed already, but explicit + enforced in the actor mission tail. */
-  noPush?: boolean;
 }
 
 export interface LabReview {
-  /** Scoring strategy id, resolved against the scoring registry. */
+  /** FORWARD-DECLARED (PR #2). */
   scoring?: string;
+  /** FORWARD-DECLARED (PR #2). */
   milestones?: string;
+  /** FORWARD-DECLARED (PR #2). */
   vocabulary?: string;
 }
 
@@ -126,7 +124,7 @@ export interface LabConfig {
   subject: LabSubject;
   actors: LabActor[];
   execution?: LabExecution;
-  /** Inline personas (mimetic.persona.v1 shape), addressable by id from actors[].persona. */
+  /** FORWARD-DECLARED (PR #2). */
   personas?: Record<string, unknown>[];
   scenario?: LabScenario;
   policies?: LabPolicies;
@@ -149,8 +147,8 @@ export type LabConfigParseResult = LabConfigParseSuccess | LabConfigParseFailure
 
 /**
  * Validate a parsed YAML object into a LabConfig. Pure: the caller owns file IO. Structural
- * validation only — actor/scenario/policy/scoring refs are resolved (and rejected) later by the
- * engine against the live registries, so adding an actor never means editing this parser.
+ * validation only. Fields the engine does not yet consume are accepted but reported in
+ * `warnings` so `lab inspect` never silently swallows a setting that does nothing.
  */
 export function parseLabConfig(raw: unknown): LabConfigParseResult {
   if (!isRecord(raw)) {
@@ -162,10 +160,8 @@ export function parseLabConfig(raw: unknown): LabConfigParseResult {
 
   const id = str(raw.id);
   if (!id || !ID_PATTERN.test(id)) {
-    return invalid("Lab id must be a public-safe token (/^[A-Za-z0-9_.-]+$/).");
+    return invalid("Lab id must be a public-safe token starting with a letter or digit (/^[A-Za-z0-9][A-Za-z0-9_.-]*$/).");
   }
-
-  const warnings: string[] = [];
 
   const subjectResult = parseSubject(raw.subject);
   if (!subjectResult.ok) {
@@ -189,15 +185,45 @@ export function parseLabConfig(raw: unknown): LabConfigParseResult {
     ...optionalStr("description", raw.description),
     subject: subjectResult.value,
     actors: actorsResult.value,
-    ...(executionResult.value ? { execution: executionResult.value } : {}),
-    ...(parsePersonas(raw.personas) ? { personas: parsePersonas(raw.personas)! } : {}),
-    ...(parseScenario(raw.scenario) ? { scenario: parseScenario(raw.scenario)! } : {}),
-    ...(parsePolicies(raw.policies) ? { policies: parsePolicies(raw.policies)! } : {}),
-    ...(parseReview(raw.review) ? { review: parseReview(raw.review)! } : {}),
-    ...(parseDefaults(raw.defaults) ? { defaults: parseDefaults(raw.defaults)! } : {})
+    ...(executionResult.value ? { execution: executionResult.value } : {})
   };
 
-  return { ok: true, config, warnings };
+  const personas = parsePersonas(raw.personas);
+  if (personas) config.personas = personas;
+  const scenario = parseScenario(raw.scenario);
+  if (scenario) config.scenario = scenario;
+  const policies = parsePolicies(raw.policies);
+  if (policies) config.policies = policies;
+  const review = parseReview(raw.review);
+  if (review) config.review = review;
+  const defaults = parseDefaults(raw.defaults);
+  if (defaults) config.defaults = defaults;
+
+  return { ok: true, config, warnings: forwardDeclaredWarnings(config) };
+}
+
+// Report fields that are present but not yet consumed by the engine, so a user never trusts a
+// setting that silently does nothing. Keeps the schema forward-correct AND honest.
+function forwardDeclaredWarnings(config: LabConfig): string[] {
+  const inert: string[] = [];
+  for (const [index, actor] of config.actors.entries()) {
+    if (actor.mission) inert.push(`actors[${index}].mission`);
+    if (actor.laneFocus) inert.push(`actors[${index}].laneFocus`);
+    if (actor.persona) inert.push(`actors[${index}].persona`);
+    if (actor.model) inert.push(`actors[${index}].model`);
+  }
+  if (config.execution?.timeoutMs !== undefined) inert.push("execution.timeoutMs");
+  if (config.execution?.completionTimeoutMs !== undefined) inert.push("execution.completionTimeoutMs");
+  if (config.execution?.concurrency !== undefined) inert.push("execution.concurrency");
+  if (config.execution?.desktop?.resolution) inert.push("execution.desktop.resolution");
+  if (config.execution?.desktop?.sandboxTimeoutMs !== undefined) inert.push("execution.desktop.sandboxTimeoutMs");
+  if (config.scenario?.ref) inert.push("scenario.ref");
+  if (config.scenario?.inline) inert.push("scenario.inline");
+  if (config.review) inert.push("review");
+  if (config.personas) inert.push("personas");
+  return inert.length === 0
+    ? []
+    : [`Forward-declared fields are set but not yet consumed by the engine (planned for a later slice): ${inert.join(", ")}.`];
 }
 
 function parseSubject(raw: unknown): { ok: true; value: LabSubject } | LabConfigParseFailure {
@@ -205,8 +231,8 @@ function parseSubject(raw: unknown): { ok: true; value: LabSubject } | LabConfig
     return invalid("Lab `subject` is required and must be an object.");
   }
   const source = str(raw.source);
-  if (source !== "this-repo" && source !== "clone" && source !== "app-url") {
-    return invalid("`subject.source` must be one of: this-repo, clone, app-url.");
+  if (source !== "this-repo" && source !== "clone") {
+    return invalid("`subject.source` must be one of: this-repo, clone.");
   }
   const subject: LabSubject = { source };
 
@@ -220,14 +246,6 @@ function parseSubject(raw: unknown): { ok: true; value: LabSubject } | LabConfig
     if (clone) {
       subject.clone = clone;
     }
-  }
-
-  if (source === "app-url") {
-    const url = str(raw.url);
-    if (!url || !/^https?:\/\//.test(url)) {
-      return invalid("`subject.url` must be an http(s) URL when source is app-url.");
-    }
-    subject.url = url;
   }
 
   return { ok: true, value: subject };
@@ -249,6 +267,11 @@ function parseClone(raw: unknown): LabSubjectClone | undefined {
 function parseActors(raw: unknown): { ok: true; value: LabActor[] } | LabConfigParseFailure {
   if (!Array.isArray(raw) || raw.length === 0) {
     return invalid("Lab `actors` must be a non-empty array.");
+  }
+  // Multi-actor fan-out is not wired yet (only actors[0] is consumed). Fail closed rather than
+  // silently ignore actors[1..]; multi-actor support lands in a later slice.
+  if (raw.length > 1) {
+    return invalid("Multiple actors are not supported yet (only the first actor runs); declare a single actor.");
   }
   const actors: LabActor[] = [];
   for (const [index, entry] of raw.entries()) {
@@ -310,24 +333,30 @@ function parseExecution(raw: unknown): { ok: true; value: LabExecution | undefin
   if (completionTimeoutMs !== undefined) execution.completionTimeoutMs = completionTimeoutMs;
   const concurrency = posInt(raw.concurrency);
   if (concurrency !== undefined) execution.concurrency = concurrency;
-  const desktop = parseDesktop(raw.desktop);
-  if (desktop) execution.desktop = desktop;
+  const desktopResult = parseDesktop(raw.desktop);
+  if (!desktopResult.ok) {
+    return desktopResult;
+  }
+  if (desktopResult.value) execution.desktop = desktopResult.value;
   return { ok: true, value: Object.keys(execution).length > 0 ? execution : undefined };
 }
 
-function parseDesktop(raw: unknown): LabExecutionDesktop | undefined {
+function parseDesktop(raw: unknown): { ok: true; value: LabExecutionDesktop | undefined } | LabConfigParseFailure {
   if (!isRecord(raw)) {
-    return undefined;
+    return { ok: true, value: undefined };
   }
   const desktop: LabExecutionDesktop = {};
-  if (Array.isArray(raw.resolution) && raw.resolution.length === 2
-    && typeof raw.resolution[0] === "number" && typeof raw.resolution[1] === "number") {
-    desktop.resolution = [raw.resolution[0], raw.resolution[1]];
+  if (raw.resolution !== undefined) {
+    const resolution = raw.resolution;
+    if (!Array.isArray(resolution) || resolution.length !== 2 || !resolution.every((value) => Number.isInteger(value) && (value as number) > 0)) {
+      return invalid("`execution.desktop.resolution` must be two positive integers [width, height].");
+    }
+    desktop.resolution = [resolution[0] as number, resolution[1] as number];
   }
   const sandboxTimeoutMs = posInt(raw.sandboxTimeoutMs);
   if (sandboxTimeoutMs !== undefined) desktop.sandboxTimeoutMs = sandboxTimeoutMs;
   if (typeof raw.codexAppServer === "boolean") desktop.codexAppServer = raw.codexAppServer;
-  return Object.keys(desktop).length > 0 ? desktop : undefined;
+  return { ok: true, value: Object.keys(desktop).length > 0 ? desktop : undefined };
 }
 
 function parsePersonas(raw: unknown): Record<string, unknown>[] | undefined {
@@ -357,30 +386,7 @@ function parsePolicies(raw: unknown): LabPolicies | undefined {
   }
   const policies: LabPolicies = {};
   if (typeof raw.redactRepos === "boolean") policies.redactRepos = raw.redactRepos;
-  if (typeof raw.noPush === "boolean") policies.noPush = raw.noPush;
-  const redaction = str(raw.redaction);
-  if (redaction) policies.redaction = redaction;
-  const network = str(raw.network);
-  if (network) policies.network = network;
-  const credentials = str(raw.credentials);
-  if (credentials) policies.credentials = credentials;
-  const approval = parseApproval(raw.approval);
-  if (approval) policies.approval = approval;
   return Object.keys(policies).length > 0 ? policies : undefined;
-}
-
-function parseApproval(raw: unknown): LabApprovalPolicy | undefined {
-  if (!isRecord(raw)) {
-    return undefined;
-  }
-  const approval: LabApprovalPolicy = {};
-  const mode = str(raw.mode);
-  if (mode === "auto-decline" || mode === "pre-grant-allowlist" || mode === "deny-all") {
-    approval.mode = mode;
-  }
-  const allow = strList(raw.allow);
-  if (allow) approval.allow = allow;
-  return Object.keys(approval).length > 0 ? approval : undefined;
 }
 
 function parseReview(raw: unknown): LabReview | undefined {

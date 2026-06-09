@@ -17,23 +17,29 @@ import { resolveLabManifest } from "../src/labs.js";
 const ROOT = process.cwd();
 
 // Normalize the two ambient, non-behavioral parts of a run bundle: ISO timestamps and the
-// captured git working-tree state (status/sha/change-counts — these reflect whatever the repo
-// looks like when the lab runs, not lab behavior).
-function normalizeBundle(value: unknown): unknown {
+// VOLATILE LEAVES of the captured git working-tree state (status/sha/change-counts reflect
+// whatever the repo looks like when the lab runs, not lab behavior). We deliberately keep the
+// git-state STRUCTURE (schema, keys, refState) asserted — only volatile leaf values are masked —
+// so a structural or redaction-shape regression in that safety surface still fails the test.
+const GIT_VOLATILE_LEAVES = new Set([
+  "shortSha", "status", "staged", "unstaged", "untracked", "total", "dirty", "ahead", "behind"
+]);
+
+function normalizeBundle(value: unknown, inGitState = false): unknown {
   if (typeof value === "string") {
     return value.replace(/\d{4}-\d{2}-\d{2}T[0-9:.]+Z/g, "[ts]");
   }
   if (Array.isArray(value)) {
-    return value.map(normalizeBundle);
+    return value.map((entry) => normalizeBundle(entry, inGitState));
   }
   if (value && typeof value === "object") {
     const obj = value as Record<string, unknown>;
-    if (obj.schema === "mimetic.git-state.v1") {
-      return "[git-state]";
-    }
+    const nowInGitState = inGitState || obj.schema === "mimetic.git-state.v1";
     const out: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(obj)) {
-      out[key] = normalizeBundle(entry);
+      out[key] = nowInGitState && GIT_VOLATILE_LEAVES.has(key) && (entry === null || typeof entry !== "object")
+        ? "[git-volatile]"
+        : normalizeBundle(entry, nowInGitState);
     }
     return out;
   }

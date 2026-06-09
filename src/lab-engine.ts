@@ -49,7 +49,7 @@ export function selectLabBackend(config: LabConfig): LabBackend {
   if (config.subject.source === "clone") {
     return config.execution?.target === "e2b-desktop" ? "meta" : "smoke";
   }
-  // this-repo and app-url both run through the synthetic/browser-proof path (runDryRun).
+  // this-repo runs through the synthetic dry-run path (runDryRun).
   return "synthetic";
 }
 
@@ -82,17 +82,17 @@ export async function runLab(config: LabConfig, options: RunLabOptions): Promise
         cwd: options.cwd,
         dryRun: resolveLabDryRun(config, options.dryRun, true) ?? true,
         simCount: options.count ?? actorLaneCount(config) ?? 4,
-        ...(config.subject.url === undefined ? {} : { appUrl: config.subject.url }),
         ...(options.runId === undefined ? {} : { runId: options.runId })
       });
       return { backend, result };
     }
     case "smoke": {
       const keep = options.keep ?? config.subject.clone?.keep;
+      const repos = options.repos ?? config.subject.repos;
       const result = await runOssLab({
         cwd: options.cwd,
         limit: options.count ?? fanout,
-        repos: options.repos ?? config.subject.repos ?? [...DEFAULT_OSS_REPOS],
+        ...(repos === undefined ? {} : { repos }),
         ...(keep === undefined ? {} : { keep }),
         ...(options.runId === undefined ? {} : { runId: options.runId })
       });
@@ -102,10 +102,11 @@ export async function runLab(config: LabConfig, options: RunLabOptions): Promise
       const dryRun = resolveLabDryRun(config, options.dryRun, undefined);
       const redactRepoNames = options.redactRepos ?? config.policies?.redactRepos;
       const codexAppServer = options.codexAppServer ?? config.execution?.desktop?.codexAppServer;
+      const metaRepos = options.repos ?? config.subject.repos;
       const result = await runOssMetaLab({
         cwd: options.cwd,
         count: options.count ?? fanout,
-        repos: options.repos ?? config.subject.repos ?? [...DEFAULT_OSS_REPOS],
+        ...(metaRepos === undefined ? {} : { repos: metaRepos }),
         ...(dryRun === undefined ? {} : { dryRun }),
         ...(redactRepoNames === undefined ? {} : { redactRepoNames }),
         ...(codexAppServer === undefined ? {} : { codexAppServer }),

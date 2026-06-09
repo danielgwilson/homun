@@ -31,23 +31,25 @@ Merge gate = rungs 1–3 (deterministic, zero-spend):
 2. **Faithfulness** (`tests/lab-golden.test.ts` + `scripts/capture-lab-goldens.mjs`): `first-run`
    and `oss` v2 configs reproduce the pre-refactor golden bundles byte-for-byte (normalizing
    timestamps + ambient git working-tree state). Plus the full suite stays green (342 tests).
-3. **Expressiveness** (`tests/lab-structural.test.ts`): a brand-new nobg-migration composition
-   and an app-url + computer-use composition both parse and route config-only, zero engine edits.
+3. **Expressiveness** (`tests/lab-structural.test.ts`): a brand-new clone+e2b migration
+   composition parses and routes config-only with zero engine edits, AND a behavioral test
+   proves the engine *consumes* config (actor count → simCount), not merely routes a label.
 
-Capstone (post-merge, paid): rung 4 = the three real sims re-expressed as config (matrix below);
-rung 5 = one live E2B run.
+Capstone (post-merge, paid): rung 4 = three real private bespoke sims re-expressed as config
+(matrix below); rung 5 = one live E2B run.
 
 ## Capability matrix (rung-4 census)
 
-Distinct capabilities the three bespoke sims (nobg `@nobg/ui-sim`, northstar `@northstar/chat-sim`,
-image-skill `agent-study-sim`) exercise, vs mimetic primitives:
+Distinct capabilities exercised by three real, structurally-different private bespoke sims —
+Project A (desktop computer-use), Project B (LLM-vs-LLM conversation), Project C (coding-agent
+study) — vs mimetic primitives:
 
 | Capability | mimetic today | Status |
 |---|---|---|
 | Headless coding agent in sandbox | `codex-app-server`, `claude-agent-sdk` registry actors | covered |
 | Headed desktop computer-use actor | `computer-use.ts` + `e2b-desktop-executor.ts` engine | **MISSING: not registered as an actor (PR #2)** |
 | Browser persona over real app (scripted) | Playwright `BrowserPersona` (`run.ts`) | covered (scripted) |
-| LLM-vs-LLM conversation actor | — | MISSING (northstar; later) |
+| LLM-vs-LLM conversation actor | — | MISSING (Project B; later) |
 | E2B fanout / parallel sandboxes | `oss-meta-lab` desktops | covered |
 | Nested / mission-control Observer | `observer*.ts` | covered |
 | Personas (typed traits) | `persona.ts` + `personas/*.yaml` | covered |
@@ -61,7 +63,11 @@ image-skill `agent-study-sim`) exercise, vs mimetic primitives:
 - Thread per-actor `mission`/`laneFocus.instruction` (already in the v2 schema) into the live E2B
   bootstrap (3 in-sandbox prompt sites) — the "configurable mission" last mile.
 - **Wire the OpenAI Computer Use loop as a registered `computer-use` actor** — required for
-  mimetic to replace nobg's computer-use bespoke sim. Then a live nobg migration sim.
+  mimetic to replace a computer-use bespoke sim. Then a live migration sim against an authorized
+  private app (redacted label).
+- Re-introduce `app-url` as a lab subject + restore the safety policy fields (`approval`/`noPush`/
+  etc.) once they are actually enforced — both removed from v2 here to avoid shipping unenforced
+  surface (see expert review).
 
 ## Honest scope note
 
