@@ -103,6 +103,8 @@ export type {
   RunSimulation,
   RunStream,
   RunStreamKind,
+  RunSubjectProvenance,
+  RunSubjectStateStepRecord,
   RunsResult,
   VerifyResult
 } from "./run.js";
@@ -123,8 +125,18 @@ export {
   resolveDevicePreset
 } from "./device-presets.js";
 export type { DevicePreset, DevicePresetName } from "./device-presets.js";
-export { isHttpUrl, isLoopbackUrl, LAB_CONFIG_SCHEMA, parseLabConfig, routesToComputerUse } from "./lab-config.js";
-export type { LabActor, LabConfig, LabConfigParseResult, LabSubject, LabSubjectServe, LabSubjectSource } from "./lab-config.js";
+export { isHttpUrl, isLoopbackUrl, LAB_CONFIG_SCHEMA, parseLabConfig, routesToComputerUse, subjectStateInvalidReason } from "./lab-config.js";
+export type {
+  LabActor,
+  LabConfig,
+  LabConfigParseResult,
+  LabStateStepWhen,
+  LabSubject,
+  LabSubjectServe,
+  LabSubjectSource,
+  LabSubjectState,
+  LabSubjectStateStep
+} from "./lab-config.js";
 export { resolveLabDryRun, runLab, selectLabBackend } from "./lab-engine.js";
 export type { LabBackend, LabOutcome, RunLabOptions } from "./lab-engine.js";
 export {

@@ -3,14 +3,14 @@
 // HONEST SCOPE (read before trusting field names): the engine routes by
 // subject.source × execution.target (disambiguated by the actor lane where both axes
 // collide) and consumes a deliberately small set of fields:
-//   subject.source/repos/appUrl/serve/env/clone.{depth,fanout,keep}, actors[0].count,
+//   subject.source/repos/appUrl/serve/env/state/clone.{depth,fanout,keep}, actors[0].count,
 //   execution.target + execution.desktop.codexAppServer, scenario.mode,
 //   policies.redactRepos, defaults.open.
 // On the computer-use routes (app-url, and clone × e2b-desktop with a computer-use actor),
 // `actors[0].type` IS load-bearing: it must resolve to a registered computer-use actor, and
 // that descriptor runs the session. Those routes also consume actors[0].{mission,persona,
 // laneFocus.instruction,model}, execution.timeoutMs, execution.desktop.{resolution,
-// sandboxTimeoutMs}, and (clone) subject.{serve,env,clone.depth}. On the other routes those
+// sandboxTimeoutMs}, and (clone) subject.{serve,env,state,clone.depth}. On the other routes those
 // fields remain FORWARD-DECLARED and NOT yet consumed — parseLabConfig emits a warning
 // listing any such field that is set, so `lab inspect` shows the truth.
 //
@@ -58,6 +58,46 @@ export interface LabSubjectServe {
   buildTimeoutMs?: number;
 }
 
+/** When a state step runs, relative to the serve sequence (clone subjects, computer-use route). */
+export type LabStateStepWhen = "before-build" | "before-start" | "after-ready";
+
+export interface LabSubjectStateStep {
+  /**
+   * [a-z0-9-] step label (must start alphanumeric), <=40 chars, unique across steps; becomes
+   * the detached-step name `subject-state-<name>` (interpolates into in-sandbox file paths —
+   * the shape is load-bearing, validated at parse AND re-enforced in the engine).
+   */
+  name: string;
+  /**
+   * Author-trusted shell command (same trust class as serve.install/build/start — the
+   * "serve commands are author-trusted" corollary). Runs detached in the subject directory
+   * with an atomic status file, kill-on-timeout, and a capped log tail. Persisted in
+   * evidence as a sha256-16 DIGEST only, never as text.
+   */
+  command: string;
+  /**
+   * Phase: before-build (after install — for builds that read the DB, e.g. SSG),
+   * before-start (after build, before the server launches — migrations, SQL/file fixtures,
+   * an in-sandbox `service postgresql start`), after-ready (after the readiness probe —
+   * fixtures loaded through the RUNNING app's API). Default: before-start.
+   */
+  when?: LabStateStepWhen;
+  /** Wall-clock budget per step. Default 300000. */
+  timeoutMs?: number;
+}
+
+/** The subject's STATE story (clone subjects): seeded in-sandbox, or declared external. */
+export interface LabSubjectState {
+  /** Ordered seed/migration/fixture steps. Order within a phase is declaration order. */
+  seed?: LabSubjectStateStep[];
+  /**
+   * Env var NAMES whose values point at state the lab does NOT control (e.g. a shared dev
+   * DB). Must be a subset of subject.env (so the declaration is mechanically backed by a
+   * provisioned name, not a vibe). Flips state provenance to "unpinned".
+   */
+  external?: string[];
+}
+
 export interface LabSubject {
   source: LabSubjectSource;
   /** `clone`: one or more owner/repo slugs (public or authorized-private). */
@@ -78,6 +118,13 @@ export interface LabSubject {
    * on the computer-use clone route.
    */
   env?: string[];
+  /**
+   * `clone` (computer-use route): the subject's state story — seed/migration/fixture steps
+   * executed in-sandbox around the serve sequence, and/or declared external state. Recorded
+   * in the run bundle as structured provenance (invariant 5): seeded with command digests,
+   * UNPINNED for external state, declared-not-run for dry-run/failed provisioning.
+   */
+  state?: LabSubjectState;
 }
 
 export interface LabActorLaneFocus {
@@ -354,7 +401,7 @@ export function routesToComputerUse(config: LabConfig): boolean {
 function forwardDeclaredWarnings(config: LabConfig): string[] {
   const inert: string[] = [];
   // The computer-use routes consume the actor prompt fields, execution.timeoutMs,
-  // execution.desktop.{resolution,sandboxTimeoutMs}, and (clone) subject.{serve,env,
+  // execution.desktop.{resolution,sandboxTimeoutMs}, and (clone) subject.{serve,env,state,
   // clone.depth}; on every other route those fields are inert.
   const routesToCua = routesToComputerUse(config);
   for (const [index, actor] of config.actors.entries()) {
@@ -372,6 +419,7 @@ function forwardDeclaredWarnings(config: LabConfig): string[] {
   if (config.subject.clone?.depth !== undefined && !routesToCua) inert.push("subject.clone.depth");
   if (config.subject.serve && !routesToCua) inert.push("subject.serve");
   if (config.subject.env && !routesToCua) inert.push("subject.env");
+  if (config.subject.state && !routesToCua) inert.push("subject.state");
   if (routesToCua) {
     // clone.keep IS consumed on the cua route (honored on FAILURE: the sandbox is left up to
     // debug a failed install/boot; otherwise always killed). clone.fanout is still inert here —
@@ -414,6 +462,9 @@ function parseSubject(raw: unknown): { ok: true; value: LabSubject } | LabConfig
   if (source !== "clone" && raw.env !== undefined) {
     return invalid("`subject.env` applies only to clone subjects (the served app's environment channel).");
   }
+  if (source !== "clone" && raw.state !== undefined) {
+    return invalid("`subject.state` applies only to clone subjects (the lab seeds the state it serves).");
+  }
 
   if (source === "clone") {
     const repos = strList(raw.repos);
@@ -440,6 +491,19 @@ function parseSubject(raw: unknown): { ok: true; value: LabSubject } | LabConfig
         return invalid(`subject.env entries must be env var NAMES like DATABASE_URL (got "${badName}"); values come from the caller's environment and are never persisted.`);
       }
       subject.env = env;
+    }
+    const stateResult = parseState(raw.state);
+    if (!stateResult.ok) {
+      return stateResult;
+    }
+    if (stateResult.value) {
+      // Semantic validation is shared with the engine (runCuaActorLab re-enforces it for
+      // configs that arrive through the library API without the parser).
+      const reason = subjectStateInvalidReason(stateResult.value, subject.env);
+      if (reason) {
+        return invalid(reason);
+      }
+      subject.state = stateResult.value;
     }
   }
 
@@ -514,6 +578,100 @@ function parseServe(raw: unknown): { ok: true; value: LabSubjectServe | undefine
   const buildTimeoutMs = posInt(raw.buildTimeoutMs);
   if (buildTimeoutMs !== undefined) serve.buildTimeoutMs = buildTimeoutMs;
   return { ok: true, value: serve };
+}
+
+/**
+ * Structural parse of `subject.state` into a candidate LabSubjectState. Deliberately keeps
+ * unrecognized `when`/`timeoutMs` values in the candidate (instead of silently dropping
+ * them) so subjectStateInvalidReason rejects them — a state declaration that silently does
+ * less than it says would violate invariant 6.
+ */
+function parseState(raw: unknown): { ok: true; value: LabSubjectState | undefined } | LabConfigParseFailure {
+  if (raw === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (!isRecord(raw)) {
+    return invalid("`subject.state` must be an object ({ seed?, external? }).");
+  }
+  const state: LabSubjectState = {};
+  if (raw.seed !== undefined) {
+    if (!Array.isArray(raw.seed) || !raw.seed.every(isRecord)) {
+      return invalid("`subject.state.seed` must be an array of step objects ({ name, command, when?, timeoutMs? }).");
+    }
+    state.seed = raw.seed.map((entry) => ({
+      name: typeof entry.name === "string" ? entry.name.trim() : "",
+      command: typeof entry.command === "string" ? entry.command.trim() : "",
+      ...(entry.when === undefined ? {} : { when: entry.when as LabStateStepWhen }),
+      ...(entry.timeoutMs === undefined ? {} : { timeoutMs: (posInt(entry.timeoutMs) ?? entry.timeoutMs) as number })
+    }));
+  }
+  if (raw.external !== undefined) {
+    const external = strList(raw.external);
+    if (!external) {
+      return invalid("`subject.state.external` must be a non-empty list of env var NAMES when set.");
+    }
+    state.external = external;
+  }
+  return { ok: true, value: state };
+}
+
+// The step name interpolates into in-sandbox script/status/log paths (`subject-state-<name>`);
+// the strict shape is load-bearing, exactly like the repo slug.
+const STATE_STEP_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+const STATE_STEP_NAME_MAX_CHARS = 40;
+const STATE_STEP_WHENS: readonly LabStateStepWhen[] = ["before-build", "before-start", "after-ready"];
+
+/**
+ * Semantic validation for `subject.state`, shared by parseLabConfig and the engine
+ * (runCuaActorLab re-enforces it on configs that arrive through the library API). Returns
+ * the failure message, or null when the declaration is valid. Reads the candidate
+ * defensively — library callers can hand the engine arbitrarily-shaped objects.
+ */
+export function subjectStateInvalidReason(state: LabSubjectState, env: readonly string[] | undefined): string | null {
+  const seed = state.seed;
+  const external = state.external;
+  if ((seed === undefined || seed.length === 0) && (external === undefined || external.length === 0)) {
+    return "`subject.state` must declare seed steps and/or external env names (an empty state block would be inert).";
+  }
+  if (seed !== undefined) {
+    if (!Array.isArray(seed) || seed.length === 0) {
+      return "`subject.state.seed` must be a non-empty array of steps when set.";
+    }
+    const names = new Set<string>();
+    for (const [index, step] of seed.entries()) {
+      const name = typeof step?.name === "string" ? step.name : "";
+      if (!STATE_STEP_NAME_PATTERN.test(name) || name.length > STATE_STEP_NAME_MAX_CHARS) {
+        return `subject.state.seed[${index}].name must match ${STATE_STEP_NAME_PATTERN} and be at most ${STATE_STEP_NAME_MAX_CHARS} chars (it names in-sandbox file paths); got "${name}".`;
+      }
+      if (names.has(name)) {
+        return `subject.state.seed step names must be unique (duplicate "${name}").`;
+      }
+      names.add(name);
+      if (typeof step.command !== "string" || step.command.trim().length === 0) {
+        return `subject.state.seed[${index}].command is required (the in-sandbox shell command that seeds the state).`;
+      }
+      if (step.when !== undefined && !STATE_STEP_WHENS.includes(step.when)) {
+        return `subject.state.seed[${index}].when must be one of: ${STATE_STEP_WHENS.join(", ")}.`;
+      }
+      if (step.timeoutMs !== undefined && !(typeof step.timeoutMs === "number" && Number.isSafeInteger(step.timeoutMs) && step.timeoutMs >= 1)) {
+        return `subject.state.seed[${index}].timeoutMs must be a positive integer.`;
+      }
+    }
+  }
+  if (external !== undefined) {
+    if (!Array.isArray(external) || external.length === 0) {
+      return "`subject.state.external` must be a non-empty list of env var NAMES when set.";
+    }
+    for (const name of external) {
+      if (typeof name !== "string" || !ENV_NAME_PATTERN.test(name)) {
+        return "subject.state.external entries must be env var NAMES like DATABASE_URL; values come from the caller's environment and are never persisted.";
+      }
+      if (!env?.includes(name)) {
+        return "subject.state.external names must also be declared in subject.env (the declaration must name a provisioned channel).";
+      }
+    }
+  }
+  return null;
 }
 
 function parseClone(raw: unknown): LabSubjectClone | undefined {

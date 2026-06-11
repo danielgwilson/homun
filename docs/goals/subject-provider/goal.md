@@ -67,9 +67,16 @@ setsid+probe). This PR lands the primitive ONCE in the substrate (src/e2b-detach
 ## Provenance (invariant 5)
 
 The bundle records what the subject WAS: repo slug, cloned commit SHA, and declared env
-names — as a provenance event, in the stream state, and in review.md. Declared-but-external
-state remains the consumer's trade; this provider pins the code, not the database (state
-pinning is the snapshot/seed layer, deliberately out of scope here).
+names — as a provenance event, in the stream state, and in review.md.
+
+Retired caveat (was: "this provider pins the code, not the database"): `subject.state` now
+gives the state story a mechanism. Seed/migration/fixture steps declared under
+`subject.state.seed[]` run in-sandbox around the serve sequence and are recorded as
+structured provenance (marker `seeded`, sha256-16 command digests — never command text);
+declared external state (`subject.state.external[]`, names backed by `subject.env`) is
+recorded as UNPINNED; dry-run and failed provisioning record `declared-not-run`; everything
+else is explicitly `undeclared`. `mimetic verify` fail-closes on state claims that do not
+match the recorded evidence. Snapshot memoization of seeded state remains a later layer.
 
 ## Out of scope (deliberate, per roadmap layer order)
 

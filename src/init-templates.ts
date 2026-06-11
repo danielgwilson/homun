@@ -170,6 +170,20 @@ subject:
     # installTimeoutMs: 1200000   # bump for monorepo-scale installs/builds (default 600000)
     # buildTimeoutMs: 1800000
   # env: [DATABASE_URL]
+  # state:                        # the subject's STATE story (recorded as provenance):
+  #   seed:                       # ordered, bounded seed/migration/fixture steps (commands are
+  #     - name: db-up             # author-trusted; evidence records sha256 digests, never text)
+  #       command: sudo service postgresql start && pg_isready -t 30
+  #       when: before-start      # before-build | before-start (default) | after-ready
+  #     - name: db-migrate
+  #       command: pnpm prisma migrate deploy
+  #       timeoutMs: 300000       # per-step budget (default 300000)
+  #     - name: admin-user        # after-ready steps run against the RUNNING app
+  #       command: curl -sf -X POST http://127.0.0.1:3000/api/test/bootstrap-admin
+  #       when: after-ready
+  #   # Or point at a shared DB you do NOT control — recorded as UNPINNED in provenance;
+  #   # each name must also be declared in subject.env:
+  #   # external: [DATABASE_URL]
   # clone:
   #   keep: true                  # leave the sandbox up on FAILURE so you can debug install/boot
   # Alternative: drive a deployment you own (Vercel preview, staging) instead of a clone:

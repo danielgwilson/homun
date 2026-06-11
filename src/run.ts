@@ -278,6 +278,53 @@ export interface RunEvent {
   streamId?: string;
 }
 
+/**
+ * One executed (or declared) subject-state seed step. Live records carry execution fields
+ * (ok/exitCode/timedOut/durationMs); dry-run "declared, not run" records carry only the
+ * declaration (name, phase, command DIGEST). The command itself never persists — the digest
+ * pins "same recipe" across bundles while the lab YAML in the consumer's repo stays the
+ * plaintext source of truth (publish-safe by construction).
+ */
+export interface RunSubjectStateStepRecord {
+  name: string;
+  when: "before-build" | "before-start" | "after-ready";
+  /** sha256 hex of the exact command string, first 16 chars (the promptDigest convention). */
+  commandDigest: string;
+  /** Absent on declared-not-run records (dry-run; unreached steps are absent entirely). */
+  ok?: boolean;
+  exitCode?: number;
+  timedOut?: boolean;
+  durationMs?: number;
+}
+
+/**
+ * Structured subject provenance (invariant 5): what the subject WAS — code pin (repo/commit)
+ * AND state story. Optional additive field on mimetic.run-bundle.v1; absent on bundles from
+ * backends that have not adopted it (and on all pre-existing bundles).
+ */
+export interface RunSubjectProvenance {
+  source: "clone" | "app-url";
+  /** Honors policies.redactRepos exactly as the provenance event does. */
+  repo?: string;
+  commit?: string;
+  /** Declared env NAMES provisioned for the subject — names only, values never. */
+  envNames?: string[];
+  state: {
+    /**
+     * seeded: live run, steps declared, ALL ran ok, no external state declared.
+     * unpinned: external state declared (seed records, if any, still attached — migrating
+     *   an external DB is still unpinned overall).
+     * declared-not-run: steps declared but not (all) executed ok — dry-run contract bundles
+     *   and failed live provisioning.
+     * undeclared: no subject.state block (stateless apps, app-url subjects) — the explicit
+     *   "absence declared" marker invariant 5 requires.
+     */
+    provenance: "seeded" | "unpinned" | "declared-not-run" | "undeclared";
+    seed?: RunSubjectStateStepRecord[];
+    externalEnvNames?: string[];
+  };
+}
+
 export interface RunBundle {
   schema: typeof RUN_BUNDLE_SCHEMA;
   runId: string;
@@ -325,6 +372,9 @@ export interface RunBundle {
   };
   review: ReviewSummary;
   feedbackCandidates: RunFeedbackCandidate[];
+  /** Structured subject provenance (invariant 5). Optional and additive: emitted by the
+   * computer-use backend; tolerated absent everywhere else. */
+  subject?: RunSubjectProvenance;
 }
 
 export interface ReviewSummary {
@@ -4025,9 +4075,19 @@ export async function verifyRun(cwdInput: string, runInput: string): Promise<Ver
       ? "live actor traces that claim goal_satisfied carry at least one action or message"
       : `no-engagement findings: ${noEngagementFindings.join(", ")} — a hollow run is not credible evidence`
   });
+  const stateFindings = isRunBundle(bundle) ? subjectStateFindings(bundle) : [];
+  checks.push({
+    name: "subject state provenance",
+    ok: stateFindings.length === 0,
+    message: stateFindings.length === 0
+      ? "subject state claims match the recorded seed/external evidence (or the subject block is honestly absent)"
+      : `subject state findings: ${stateFindings.join(", ")}`
+  });
 
   const ok = checks.every((check) => check.ok);
-  const warnings = isRunBundle(bundle) ? rawScreenshotPostureWarnings(bundle) : [];
+  const warnings = isRunBundle(bundle)
+    ? [...rawScreenshotPostureWarnings(bundle), ...undeclaredSubjectStateWarnings(bundle)]
+    : [];
 
   return {
     schema: VERIFY_SCHEMA,
@@ -4854,6 +4914,107 @@ function rawScreenshotPostureWarnings(bundle: RunBundle): string[] {
   ];
 }
 
+// The promptDigest convention: sha256 hex, first 16 chars. A "seeded" record without a real
+// digest cannot pin "same recipe" across bundles, so verify treats it as a hollow claim.
+const COMMAND_DIGEST_PATTERN = /^[0-9a-f]{16}$/;
+// Env var NAME shape (mirrors lab-config's ENV_NAME_PATTERN). externalEnvNames must hold
+// NAMES only — a value sneaking into the list trips this check (a free secret tripwire).
+const SUBJECT_ENV_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+
+/**
+ * The `subject state provenance` check (invariant 5 + invariant 4): a bundle's state CLAIM
+ * must match its recorded seed/external evidence. Bundles without a subject block (all
+ * pre-existing and non-cua bundles) pass untouched. Live-vs-dry-run is judged from
+ * bundle.mode, exactly like noEngagementActorFindings.
+ */
+function subjectStateFindings(bundle: RunBundle): string[] {
+  const subject = bundle.subject;
+  if (subject === undefined) {
+    return [];
+  }
+
+  const findings: string[] = [];
+  const state = subject.state;
+  const seed = state.seed ?? [];
+  const live = bundle.mode === "live";
+
+  // Marker-independent rule: a passed LIVE run can never ride on a seed step that did not
+  // complete ok (closes the hollow-seeded × unpinned hole — an unpinned bundle still carries
+  // its seed records, and a failed migration must not hide behind the external marker).
+  if (live && bundle.review.verdict === "pass" && seed.some((record) => record.ok !== true)) {
+    findings.push("review verdict is pass but a recorded seed step did not complete ok — a passed live run cannot carry failed or unexecuted state steps");
+  }
+
+  switch (state.provenance) {
+    case "seeded": {
+      if (!live) {
+        findings.push('state marker "seeded" on a dry-run bundle — a contract bundle cannot claim executed state');
+      }
+      if (seed.length === 0) {
+        findings.push('state marker "seeded" with zero seed step records is a hollow state claim');
+      }
+      for (const record of seed) {
+        if (!COMMAND_DIGEST_PATTERN.test(record.commandDigest)) {
+          findings.push(`seed step "${record.name}" lacks a sha256-16 commandDigest`);
+        }
+        if (live && record.ok !== true) {
+          findings.push(`state marker "seeded" but step "${record.name}" did not complete ok`);
+        }
+      }
+      break;
+    }
+    case "unpinned": {
+      const externalEnvNames = state.externalEnvNames ?? [];
+      if (externalEnvNames.length === 0) {
+        findings.push('state marker "unpinned" requires non-empty externalEnvNames (the declaration must name the external channel)');
+      }
+      for (const name of externalEnvNames) {
+        if (!SUBJECT_ENV_NAME_PATTERN.test(name)) {
+          // Deliberately does NOT echo the entry: a malformed entry may BE a value.
+          findings.push("externalEnvNames carries an entry that is not an env var NAME shape (values must never appear in evidence)");
+        }
+      }
+      break;
+    }
+    case "declared-not-run": {
+      if (live && bundle.review.verdict === "pass") {
+        findings.push("a passed live run cannot claim its declared seed steps did not run (state marker \"declared-not-run\")");
+      }
+      break;
+    }
+    case "undeclared":
+      break;
+    default:
+      findings.push("unknown subject state provenance marker");
+  }
+
+  return findings;
+}
+
+/**
+ * Advisory (never flips ok): a LIVE clone bundle whose subject env is provisioned while its
+ * state story is undeclared probably points at state the lab does not control. Emitted at
+ * most ONCE per bundle (the subject block is bundle-level, never per stream). GITHUB_TOKEN
+ * is mechanically excluded: the harness consumes that name for clone auth — it carries no
+ * state implication.
+ */
+function undeclaredSubjectStateWarnings(bundle: RunBundle): string[] {
+  const subject = bundle.subject;
+  if (subject === undefined || bundle.mode !== "live" || subject.source !== "clone") {
+    return [];
+  }
+  if (subject.state.provenance !== "undeclared") {
+    return [];
+  }
+  const stateRelevantEnvNames = (subject.envNames ?? []).filter((name) => name !== "GITHUB_TOKEN");
+  if (stateRelevantEnvNames.length === 0) {
+    return [];
+  }
+  return [
+    `Subject env is provisioned (${stateRelevantEnvNames.join(", ")}) but no state story is declared; if any name points at external state, declare subject.state.external (recorded UNPINNED) or seed in-sandbox state with subject.state.seed.`
+  ];
+}
+
 const riskyPublicArtifactPathSegments = new Set([
   ".git",
   "Cookies",
@@ -5019,7 +5180,47 @@ function isRunBundle(value: unknown): value is RunBundle {
     && isRecord(value.redaction)
     && value.redaction.status === "passed"
     && Array.isArray(value.feedbackCandidates)
-    && value.feedbackCandidates.every(isRunFeedbackCandidate);
+    && value.feedbackCandidates.every(isRunFeedbackCandidate)
+    // Optional and additive: pre-existing bundles (and non-cua backends) carry no subject
+    // block; when present it must be well-shaped (semantics are the verify check's job).
+    && (value.subject === undefined || isRunSubjectProvenance(value.subject));
+}
+
+function isRunSubjectProvenance(value: unknown): value is RunSubjectProvenance {
+  if (!isRecord(value)) return false;
+  if (value.source !== "clone" && value.source !== "app-url") return false;
+  if (value.repo !== undefined && typeof value.repo !== "string") return false;
+  if (value.commit !== undefined && typeof value.commit !== "string") return false;
+  if (value.envNames !== undefined
+    && !(Array.isArray(value.envNames) && value.envNames.every((name) => typeof name === "string"))) {
+    return false;
+  }
+  const state = value.state;
+  if (!isRecord(state)) return false;
+  if (state.provenance !== "seeded" && state.provenance !== "unpinned"
+    && state.provenance !== "declared-not-run" && state.provenance !== "undeclared") {
+    return false;
+  }
+  if (state.seed !== undefined
+    && !(Array.isArray(state.seed) && state.seed.every(isRunSubjectStateStepRecord))) {
+    return false;
+  }
+  if (state.externalEnvNames !== undefined
+    && !(Array.isArray(state.externalEnvNames) && state.externalEnvNames.every((name) => typeof name === "string"))) {
+    return false;
+  }
+  return true;
+}
+
+function isRunSubjectStateStepRecord(value: unknown): value is RunSubjectStateStepRecord {
+  return isRecord(value)
+    && typeof value.name === "string"
+    && (value.when === "before-build" || value.when === "before-start" || value.when === "after-ready")
+    && typeof value.commandDigest === "string"
+    && (value.ok === undefined || typeof value.ok === "boolean")
+    && (value.exitCode === undefined || typeof value.exitCode === "number")
+    && (value.timedOut === undefined || typeof value.timedOut === "boolean")
+    && (value.durationMs === undefined || typeof value.durationMs === "number");
 }
 
 function isRunSource(value: unknown): value is RunBundle["source"] {

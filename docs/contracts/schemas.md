@@ -49,8 +49,15 @@ deleted when labs became config.
 A lab is a composition over code primitives, not a hardcoded kind:
 
 - `subject`: what the run acts on — `this-repo`, `clone` (owner/repo slugs,
-  optional in-sandbox `serve` + env var names), or `app-url` (loopback unless
-  `policies.allowPublicTargets` declares an owned deployment);
+  optional in-sandbox `serve` + env var names + `state`), or `app-url`
+  (loopback unless `policies.allowPublicTargets` declares an owned deployment);
+- `subject.state` (clone subjects, computer-use route): the subject's state
+  story. `state.seed[]` declares ordered, bounded seed/migration/fixture steps
+  (`{ name, command, when: before-build | before-start | after-ready,
+  timeoutMs }`) executed in-sandbox around the serve sequence; `state.external[]`
+  declares env var NAMES (each must also appear in `subject.env`) pointing at
+  state the lab does not control, recorded as UNPINNED in provenance. Commands
+  persist in evidence as sha256-16 digests only, never as text;
 - `actors`: who drives it. On the computer-use routes `actors[0].type` is a
   real dispatch key resolved against the actor registry; elsewhere it is a
   descriptive label (e.g. `synthetic-persona`) and `count` sets the lane count;
@@ -105,6 +112,14 @@ Core-owned fields:
 - `artifacts`
 - `review`
 - `feedbackCandidates`
+- `subject` (optional, additive): structured subject provenance —
+  `{ source: clone | app-url, repo?, commit?, envNames?, state }` where `state`
+  is `{ provenance: seeded | unpinned | declared-not-run | undeclared,
+  seed?: [{ name, when, commandDigest, ok?, exitCode?, timedOut?, durationMs? }],
+  externalEnvNames? }`. Emitted by the computer-use backend; absent on
+  pre-existing and other backends' bundles. `commandDigest` is the sha256-16 of
+  the exact seed command — command text and env values never appear. Verified
+  by the `subject state provenance` check in `mimetic verify`.
 
 Adapter-owned fields:
 

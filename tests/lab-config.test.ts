@@ -357,4 +357,135 @@ describe("parseLabConfig (mimetic.lab.v2)", () => {
       expect(result.error.code).toBe("MIMETIC_LAB_INVALID");
     });
   });
+
+  describe("subject.state (seed/migrate/fixtures, computer-use clone route)", () => {
+    const validCloneCua = {
+      schema: LAB_CONFIG_SCHEMA,
+      id: "cua-clone-state",
+      subject: {
+        source: "clone",
+        repos: ["example-org/example-app"],
+        serve: { install: "pnpm install", build: "pnpm build", start: "pnpm start", url: "http://127.0.0.1:3000/" },
+        env: ["DATABASE_URL"]
+      },
+      actors: [{ type: "openai-computer-use", mission: "Explore." }],
+      execution: { target: "e2b-desktop", timeoutMs: 120000 },
+      scenario: { mode: "live" }
+    };
+    const withState = (state: unknown) => ({
+      ...validCloneCua,
+      subject: { ...validCloneCua.subject, state }
+    });
+
+    it("parses a full state declaration (all three phases + external) with ZERO warnings on the cua route", () => {
+      const result = parseLabConfig(withState({
+        seed: [
+          { name: "db-up", command: "sudo service postgresql start && pg_isready -t 30", when: "before-start" },
+          { name: "db-migrate", command: "pnpm prisma migrate deploy", timeoutMs: 300000 },
+          { name: "prebuild-fixtures", command: "node scripts/fixtures.js", when: "before-build" },
+          { name: "admin-user", command: "curl -sf -X POST http://127.0.0.1:3000/api/test/bootstrap-admin", when: "after-ready" }
+        ],
+        external: ["DATABASE_URL"]
+      }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.warnings).toEqual([]);
+      expect(result.config.subject.state?.seed).toHaveLength(4);
+      expect(result.config.subject.state?.seed?.[0]).toEqual({
+        name: "db-up",
+        command: "sudo service postgresql start && pg_isready -t 30",
+        when: "before-start"
+      });
+      // `when` stays optional in the parsed config (the engine defaults it to before-start).
+      expect(result.config.subject.state?.seed?.[1]).toEqual({
+        name: "db-migrate",
+        command: "pnpm prisma migrate deploy",
+        timeoutMs: 300000
+      });
+      expect(result.config.subject.state?.external).toEqual(["DATABASE_URL"]);
+    });
+
+    it("parses seed-only state (no external) — the common synthetic-seed shape", () => {
+      const result = parseLabConfig(withState({
+        seed: [{ name: "fixtures", command: "pnpm prisma db seed" }]
+      }));
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.warnings).toEqual([]);
+    });
+
+    it.each([
+      ["state on app-url", {
+        ...validCloneCua,
+        subject: { source: "app-url", appUrl: "http://127.0.0.1:3000/", state: { seed: [{ name: "a", command: "true" }] } }
+      }],
+      ["state on this-repo", {
+        schema: LAB_CONFIG_SCHEMA,
+        id: "x",
+        subject: { source: "this-repo", state: { seed: [{ name: "a", command: "true" }] } },
+        actors: [{ type: "synthetic-persona" }]
+      }],
+      ["empty state object (would be inert)", withState({})],
+      ["state not an object", withState("seed it")],
+      ["seed not an array", withState({ seed: { name: "a", command: "true" } })],
+      ["seed empty array", withState({ seed: [] })],
+      ["step missing name", withState({ seed: [{ command: "true" }] })],
+      ["step missing command", withState({ seed: [{ name: "a" }] })],
+      ["step name uppercase", withState({ seed: [{ name: "Db-Up", command: "true" }] })],
+      ["step name with underscore", withState({ seed: [{ name: "db_up", command: "true" }] })],
+      ["step name leading dash", withState({ seed: [{ name: "-up", command: "true" }] })],
+      ["step name over 40 chars", withState({ seed: [{ name: "a".repeat(41), command: "true" }] })],
+      ["duplicate step names", withState({ seed: [{ name: "a", command: "true" }, { name: "a", command: "false" }] })],
+      ["bad when", withState({ seed: [{ name: "a", command: "true", when: "after-start" }] })],
+      ["zero timeoutMs", withState({ seed: [{ name: "a", command: "true", timeoutMs: 0 }] })],
+      ["non-numeric timeoutMs", withState({ seed: [{ name: "a", command: "true", timeoutMs: "soon" }] })],
+      ["external empty list", withState({ external: [] })],
+      ["external value-shaped entry", withState({ external: ["lowercase-not-a-name"] })],
+      ["external name not in subject.env", withState({ external: ["REDIS_URL"] })],
+      ["external without subject.env at all", {
+        ...validCloneCua,
+        subject: { ...validCloneCua.subject, env: undefined, state: { external: ["DATABASE_URL"] } }
+      }]
+    ])("fails closed on state mis-config: %s", (_label, input) => {
+      const result = parseLabConfig(input);
+      expect(result.ok, _label).toBe(false);
+      if (result.ok) return;
+      expect(result.error.code).toBe("MIMETIC_LAB_INVALID");
+    });
+
+    it("names the provisioned-channel rule when external is not backed by subject.env", () => {
+      const result = parseLabConfig(withState({ external: ["REDIS_URL"] }));
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.message).toContain("subject.env");
+      expect(result.error.message).toContain("provisioned channel");
+    });
+
+    it("warns subject.state as inert on non-cua routes — alongside the other forward-declared warnings, which still fire", () => {
+      // Smoke route (clone, no desktop target): serve, env, AND state all warn — adding the
+      // state warning must not displace the existing ones.
+      const smoke = parseLabConfig({
+        ...withState({ seed: [{ name: "fixtures", command: "pnpm prisma db seed" }] }),
+        actors: [{ type: "mimetic-setup" }],
+        execution: undefined,
+        scenario: undefined
+      });
+      expect(smoke.ok).toBe(true);
+      if (!smoke.ok) return;
+      expect(smoke.warnings).toHaveLength(1);
+      expect(smoke.warnings[0]).toContain("subject.state");
+      expect(smoke.warnings[0]).toContain("subject.serve");
+      expect(smoke.warnings[0]).toContain("subject.env");
+
+      // Meta route (clone × e2b-desktop, non-cua actor): same story.
+      const meta = parseLabConfig({
+        ...withState({ seed: [{ name: "fixtures", command: "pnpm prisma db seed" }] }),
+        actors: [{ type: "codex-app-server" }]
+      });
+      expect(meta.ok).toBe(true);
+      if (!meta.ok) return;
+      expect(meta.warnings[0]).toContain("subject.state");
+      expect(meta.warnings[0]).toContain("subject.serve");
+    });
+  });
 });
