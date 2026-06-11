@@ -93,7 +93,7 @@ mimetic_feedback:
   persona_id: "<persona-id-or-class>"
   actor: "<actor-runtime>"
   substrate: "<substrate>"
-  failure_owner: "product_ux|agent_runtime|executor_substrate|payment_provider|model_provider|harness|unknown"
+  failure_owner: "harness|target-app|actor|environment|unknown"
   source_bundle: "<path-or-url>"
   evidence:
     - "<relative artifact pointer>"

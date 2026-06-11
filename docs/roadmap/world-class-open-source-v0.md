@@ -2,7 +2,11 @@
 
 Date: 2026-06-01
 
-Status: staged build plan for `mimetic-cli`.
+Status: HISTORICAL (banner added 2026-06-11). This was the staged v0 build
+plan; it is kept as delivery history and is not maintained. Several "Non-Goals
+For V0" have since shipped as explicit opt-ins (the OpenAI computer-use actor,
+live E2B desktop labs), and the lab schema is now `mimetic.lab.v2`. For the
+live goal state read [`docs/goals/current.md`](../goals/current.md).
 
 ## Target Outcome
 

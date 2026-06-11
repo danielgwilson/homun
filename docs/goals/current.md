@@ -113,9 +113,10 @@ Minimum acceptance:
 - Clone subject provider: `subject.source: clone` + `serve` clones a repo INTO the
   sandbox, installs/builds/starts it from config, probes readiness, and records
   provenance (repo, commit, env names) in the bundle — config-only computer-use
-  labs against real apps (0.5.0; see `docs/goals/proof-roadmap/goal.md` and
-  `docs/principles/invariants-and-defaults.md` in the repository — repo-only
-  docs, not shipped in the npm package). `done`
+  labs against real apps (0.5.0; see `docs/goals/proof-roadmap/goal.md` —
+  repo-only, not shipped in the npm package — and
+  `docs/principles/invariants-and-defaults.md`, which ships in the package).
+  `done`
 - De-paranoia (0.6.0): the redaction redesign + demoted defaults. Screenshots are
   full-fidelity by default (redaction binds the publish boundary, not capture —
   `policies.redactScreenshots` opts back in); `policies.allowPublicTargets` lets an

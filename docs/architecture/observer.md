@@ -97,13 +97,22 @@ session contract instead of failing the lane.
 
 ## Current Gaps
 
-This slice implements the Observer substrate, synthetic stream contracts, and
-active-run Observer snapshots for local `codex-exec`. The following are
-intentionally still adapter work:
+This slice implemented the Observer substrate, synthetic stream contracts, and
+active-run Observer snapshots for local `codex-exec`.
 
-- real Playwright/browser actor execution;
-- E2B or local PTY capture;
+Since shipped (updated 2026-06-11):
+
+- Playwright-backed browser proof with scripted, app-specific
+  `browser.steps` authored in `mimetic/scenarios/*.yaml` (`src/run.ts`);
+- native Codex app-server session adapter (`src/codex-app-server.ts`,
+  registered in `src/actor-registry.ts`);
+- E2B desktop substrate lanes on the meta and computer-use routes;
+- computer-use bundles persist a `screenshots/` directory and the Observer
+  renders the frames (`src/cua-actor-lab.ts`).
+
+Intentionally still adapter work:
+
+- local PTY capture;
 - Codex TUI live follow after workspace trust bootstrap;
-- native Codex app-server session adapter;
-- screenshot and trace galleries;
+- richer screenshot/trace galleries across multi-step product journeys;
 - reviewer acceptance gates over real product behavior.
