@@ -17,7 +17,9 @@ import {
   listRuns,
   readReview,
   runDryRun,
-  verifyRun
+  verifyRun,
+  type RunSubjectProvenance,
+  type RunSubjectStateStepRecord
 } from "../src/run.js";
 
 async function withFixtureCopy<T>(callback: (cwd: string) => Promise<T>): Promise<T> {
@@ -2192,7 +2194,7 @@ function cuaActorTrace(args: {
 async function writeCuaRunFixture(
   cwd: string,
   runId: string,
-  args: { dryRun: boolean; trace?: ActorTrace }
+  args: { dryRun: boolean; trace?: ActorTrace; subject?: RunSubjectProvenance }
 ): Promise<void> {
   const session: CuaLoopResult | undefined = args.trace
     ? {
@@ -2216,6 +2218,11 @@ async function writeCuaRunFixture(
     ...(session ? { session, traceArtifactPath: "actor.json" } : {}),
     source: await buildRunSource({ cwd, mimeticSource: "present", packageName: "mimetic-cli" })
   });
+  // The verify matrix forges subject blocks the producer would never emit (e.g. a "seeded"
+  // claim over a failed step) — verify must reject them from the persisted evidence alone.
+  if (args.subject) {
+    bundle.subject = args.subject;
+  }
   const runDir = path.join(cwd, ".mimetic", "runs", runId);
   await mkdir(runDir, { recursive: true });
   await writeFile(path.join(runDir, "run.json"), `${JSON.stringify(bundle, null, 2)}\n`, "utf8");
@@ -2300,6 +2307,212 @@ describe("verify hardening (no-engagement + screenshot posture)", () => {
       expect(verify.ok).toBe(true);
       expect(verify.checks.every((entry) => entry.ok)).toBe(true);
       expect(verify.warnings).toEqual([]);
+    });
+  });
+});
+
+describe("verify: subject state provenance", () => {
+  // An ENGAGED live trace (status passed → review verdict pass) so the matrix isolates the
+  // state check: the actor-engagement check must not be the thing failing these bundles.
+  const engagedTrace = (): ActorTrace =>
+    cuaActorTrace({
+      counts: { turns: 2, actions: 1, screenshots: 0, reasonings: 0, messages: 1, idleTurns: 0, noProgressTurns: 0 },
+      items: [
+        { id: "action-001", kind: "ui_action", lifecycle: "completed", title: "click (11, 22)" },
+        { id: "message-001", kind: "message", lifecycle: "completed", title: "message", text: "Done." }
+      ]
+    });
+  const seedRecord = (overrides: Partial<RunSubjectStateStepRecord>): RunSubjectStateStepRecord => ({
+    name: "db-migrate",
+    when: "before-start",
+    commandDigest: "a1b2c3d4e5f60718",
+    ...overrides
+  });
+  const cloneSubject = (state: RunSubjectProvenance["state"], envNames: string[] = []): RunSubjectProvenance => ({
+    source: "clone",
+    repo: "example-org/example-app",
+    commit: "abc123def4567890abc1",
+    envNames,
+    state
+  });
+  const stateCheck = (verify: Awaited<ReturnType<typeof verifyRun>>) =>
+    verify.checks.find((entry) => entry.name === "subject state provenance");
+
+  it("passes a live seeded bundle whose every record ran ok with a sha256-16 digest", async () => {
+    await withFixtureCopy(async (cwd) => {
+      await writeCuaRunFixture(cwd, "state-seeded-ok", {
+        dryRun: false,
+        trace: engagedTrace(),
+        subject: cloneSubject({ provenance: "seeded", seed: [seedRecord({ ok: true, exitCode: 0, durationMs: 1200 })] })
+      });
+      const verify = await verifyRun(cwd, "state-seeded-ok");
+      expect(verify.ok).toBe(true);
+      expect(stateCheck(verify)?.ok).toBe(true);
+      expect(verify.warnings).toEqual([]);
+    });
+  });
+
+  it("FAILS a hollow seeded claim: live pass verdict over a seed step that did not run ok", async () => {
+    await withFixtureCopy(async (cwd) => {
+      await writeCuaRunFixture(cwd, "state-seeded-hollow", {
+        dryRun: false,
+        trace: engagedTrace(),
+        subject: cloneSubject({ provenance: "seeded", seed: [seedRecord({ ok: false, exitCode: 1 })] })
+      });
+      const verify = await verifyRun(cwd, "state-seeded-hollow");
+      expect(verify.ok).toBe(false);
+      expect(verify.error?.code).toBe("MIMETIC_INVALID_RUN_BUNDLE");
+      expect(stateCheck(verify)?.ok).toBe(false);
+      expect(stateCheck(verify)?.message).toContain("did not complete ok");
+    });
+  });
+
+  it("FAILS seeded with zero records, and seeded records without a real digest", async () => {
+    await withFixtureCopy(async (cwd) => {
+      await writeCuaRunFixture(cwd, "state-seeded-empty", {
+        dryRun: false,
+        trace: engagedTrace(),
+        subject: cloneSubject({ provenance: "seeded", seed: [] })
+      });
+      const empty = await verifyRun(cwd, "state-seeded-empty");
+      expect(stateCheck(empty)?.ok).toBe(false);
+      expect(stateCheck(empty)?.message).toContain("hollow");
+
+      await writeCuaRunFixture(cwd, "state-seeded-bad-digest", {
+        dryRun: false,
+        trace: engagedTrace(),
+        subject: cloneSubject({
+          provenance: "seeded",
+          seed: [seedRecord({ ok: true, commandDigest: "not-a-digest" })]
+        })
+      });
+      const badDigest = await verifyRun(cwd, "state-seeded-bad-digest");
+      expect(stateCheck(badDigest)?.ok).toBe(false);
+      expect(stateCheck(badDigest)?.message).toContain("commandDigest");
+    });
+  });
+
+  it("REJECTS marker seeded on a dry-run bundle — a contract bundle cannot claim executed state", async () => {
+    await withFixtureCopy(async (cwd) => {
+      await writeCuaRunFixture(cwd, "state-seeded-dryrun", {
+        dryRun: true,
+        subject: cloneSubject({ provenance: "seeded", seed: [seedRecord({ ok: true })] })
+      });
+      const verify = await verifyRun(cwd, "state-seeded-dryrun");
+      expect(verify.ok).toBe(false);
+      expect(stateCheck(verify)?.ok).toBe(false);
+      expect(stateCheck(verify)?.message).toContain("dry-run");
+    });
+  });
+
+  it("FAILS unpinned without externalEnvNames, and value-shaped entries without echoing them", async () => {
+    await withFixtureCopy(async (cwd) => {
+      await writeCuaRunFixture(cwd, "state-unpinned-empty", {
+        dryRun: false,
+        trace: engagedTrace(),
+        subject: cloneSubject({ provenance: "unpinned" })
+      });
+      const empty = await verifyRun(cwd, "state-unpinned-empty");
+      expect(stateCheck(empty)?.ok).toBe(false);
+      expect(stateCheck(empty)?.message).toContain("externalEnvNames");
+
+      // A VALUE smuggled into the names list trips the shape check (a free secret tripwire) —
+      // and the finding must not echo the entry, which may itself be the secret.
+      const leakedValue = "db-pass-" + "value-123456";
+      await writeCuaRunFixture(cwd, "state-unpinned-value", {
+        dryRun: false,
+        trace: engagedTrace(),
+        subject: cloneSubject({ provenance: "unpinned", externalEnvNames: [leakedValue] })
+      });
+      const value = await verifyRun(cwd, "state-unpinned-value");
+      expect(stateCheck(value)?.ok).toBe(false);
+      expect(stateCheck(value)?.message).toContain("not an env var NAME shape");
+      expect(stateCheck(value)?.message).not.toContain(leakedValue);
+    });
+  });
+
+  it("FAILS a live PASS verdict claiming declared-not-run", async () => {
+    await withFixtureCopy(async (cwd) => {
+      await writeCuaRunFixture(cwd, "state-dnr-live-pass", {
+        dryRun: false,
+        trace: engagedTrace(),
+        subject: cloneSubject({ provenance: "declared-not-run", seed: [seedRecord({})] })
+      });
+      const verify = await verifyRun(cwd, "state-dnr-live-pass");
+      expect(verify.ok).toBe(false);
+      expect(stateCheck(verify)?.ok).toBe(false);
+      expect(stateCheck(verify)?.message).toContain("cannot claim its declared seed steps did not run");
+    });
+  });
+
+  it("FAILS a live PASS verdict carrying a failed seed record even under the unpinned marker (the hollow-seeded × unpinned hole)", async () => {
+    await withFixtureCopy(async (cwd) => {
+      await writeCuaRunFixture(cwd, "state-unpinned-failed-seed", {
+        dryRun: false,
+        trace: engagedTrace(),
+        subject: cloneSubject(
+          {
+            provenance: "unpinned",
+            seed: [seedRecord({ ok: false, exitCode: 1 })],
+            externalEnvNames: ["DATABASE_URL"]
+          },
+          ["DATABASE_URL"]
+        )
+      });
+      const verify = await verifyRun(cwd, "state-unpinned-failed-seed");
+      expect(verify.ok).toBe(false);
+      expect(stateCheck(verify)?.ok).toBe(false);
+      expect(stateCheck(verify)?.message).toContain("passed live run cannot carry failed");
+    });
+  });
+
+  it("warns ONCE (never fails) on a live clone bundle with provisioned env but an undeclared state story — GITHUB_TOKEN excluded", async () => {
+    await withFixtureCopy(async (cwd) => {
+      await writeCuaRunFixture(cwd, "state-undeclared-env", {
+        dryRun: false,
+        trace: engagedTrace(),
+        subject: cloneSubject({ provenance: "undeclared" }, ["DATABASE_URL", "GITHUB_TOKEN"])
+      });
+      const verify = await verifyRun(cwd, "state-undeclared-env");
+      expect(verify.ok).toBe(true);
+      expect(stateCheck(verify)?.ok).toBe(true);
+      const stateWarnings = verify.warnings.filter((warning) => warning.includes("no state story"));
+      expect(stateWarnings).toHaveLength(1);
+      expect(stateWarnings[0]).toContain("DATABASE_URL");
+      expect(stateWarnings[0]).not.toContain("GITHUB_TOKEN");
+
+      // GITHUB_TOKEN alone is the harness's clone-auth channel — no state implication, no nudge.
+      await writeCuaRunFixture(cwd, "state-undeclared-token-only", {
+        dryRun: false,
+        trace: engagedTrace(),
+        subject: cloneSubject({ provenance: "undeclared" }, ["GITHUB_TOKEN"])
+      });
+      const tokenOnly = await verifyRun(cwd, "state-undeclared-token-only");
+      expect(tokenOnly.ok).toBe(true);
+      expect(tokenOnly.warnings).toEqual([]);
+    });
+  });
+
+  it("rejects a malformed subject block at the bundle-shape gate (unknown marker)", async () => {
+    await withFixtureCopy(async (cwd) => {
+      await writeCuaRunFixture(cwd, "state-bad-marker", {
+        dryRun: false,
+        trace: engagedTrace(),
+        subject: cloneSubject({ provenance: "pinned" as never })
+      });
+      const verify = await verifyRun(cwd, "state-bad-marker");
+      expect(verify.ok).toBe(false);
+      expect(verify.checks.find((entry) => entry.name === "run bundle shape")?.ok).toBe(false);
+    });
+  });
+
+  it("keeps verifying pre-existing bundles that carry no subject block at all", async () => {
+    await withFixtureCopy(async (cwd) => {
+      const result = await runDryRun({ cwd, dryRun: true, simCount: 1 });
+      expect(result.ok).toBe(true);
+      const verify = await verifyRun(cwd, "latest");
+      expect(verify.ok).toBe(true);
+      expect(stateCheck(verify)?.ok).toBe(true);
     });
   });
 });

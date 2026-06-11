@@ -48,7 +48,15 @@ import {
   resolveDevicePreset,
   type DevicePreset
 } from "./device-presets.js";
-import { isHttpUrl, isLoopbackUrl, type LabConfig, type LabSubjectServe } from "./lab-config.js";
+import {
+  isHttpUrl,
+  isLoopbackUrl,
+  subjectStateInvalidReason,
+  type LabConfig,
+  type LabStateStepWhen,
+  type LabSubjectServe,
+  type LabSubjectState
+} from "./lab-config.js";
 import { renderObserver, type ObserverResult } from "./observer.js";
 import { redactText } from "./redaction.js";
 import {
@@ -61,7 +69,9 @@ import {
   type RunEvent,
   type RunSimulation,
   type RunSimulationStatus,
-  type RunStream
+  type RunStream,
+  type RunSubjectProvenance,
+  type RunSubjectStateStepRecord
 } from "./run.js";
 
 export const CUA_ACTOR_LAB_SCHEMA = "mimetic.cua-lab-result.v1";
@@ -89,6 +99,9 @@ const CLONE_TIMEOUT_MS = 5 * 60_000;
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
 const BUILD_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_READY_TIMEOUT_MS = 180_000;
+// Per-step budget for subject.state seed steps; each step's declared (or default) budget is
+// also summed into the default sandbox deadline so seeding never eats the session's room.
+const DEFAULT_STATE_STEP_TIMEOUT_MS = 5 * 60_000;
 // How much of a failing step's log tail rides the (redacted) error message.
 const ERROR_TAIL_CHARS = 2000;
 
@@ -151,6 +164,9 @@ export interface CuaActorLabResult {
     commit?: string;
     /** Declared env NAMES provisioned for the subject (values never surface anywhere). */
     envNames?: string[];
+    /** The subject's state story (seeded digests / UNPINNED external / declared-not-run /
+     * undeclared) — the same block the run bundle records. */
+    state: RunSubjectProvenance["state"];
   };
   observer?: ObserverResult;
   warnings: string[];
@@ -226,6 +242,33 @@ export async function runCuaActorLab(options: RunCuaActorLabOptions): Promise<Cu
           : `subject.repos[0] must be an owner/repo slug (got "${subjectRepo ?? ""}").`
       }
     };
+  }
+
+  // Engine re-enforcement of the state declaration for configs arriving via the library API
+  // (the parser rejects these too, but runCuaActorLab is itself exported npm surface): step
+  // names interpolate into in-sandbox file paths, and external must name a provisioned
+  // channel — same fail-closed pattern as the repo-slug re-check above.
+  if (config.subject.state) {
+    const stateReason = !cloneRoute
+      ? "`subject.state` applies only to clone subjects (the lab seeds the state it serves)."
+      : subjectStateInvalidReason(config.subject.state, config.subject.env);
+    if (stateReason) {
+      return {
+        schema: CUA_ACTOR_LAB_SCHEMA,
+        ok: false,
+        cwd,
+        labId: config.id,
+        actor: descriptor.id,
+        appUrl,
+        dryRun,
+        runId: options.runId ?? "not-created",
+        warnings,
+        error: {
+          code: "MIMETIC_CUA_LAB_SUBJECT_INVALID",
+          message: stateReason
+        }
+      };
+    }
   }
 
   // Re-enforce the entry-target boundary for configs that arrive through the library API
@@ -375,13 +418,22 @@ export async function runCuaActorLab(options: RunCuaActorLabOptions): Promise<Cu
   let killed = false;
   let streamUrl: string | undefined;
   let subjectCommit: string | undefined;
+  // Per-step state provenance, pushed the moment each step finishes (mirrors onCommit) so
+  // partial provenance survives a later step's failure. Unreached steps stay absent.
+  const stateStepRecords: RunSubjectStateStepRecord[] = [];
 
   if (!dryRun) {
     const requestTimeoutMs = readPositiveInt(env.MIMETIC_E2B_REQUEST_TIMEOUT_MS, 60_000);
-    // The subject's serve steps (clone/install/build) need their own room beyond the actor
-    // session budget; the sandbox deadline covers the whole lane.
+    // The subject's serve steps (clone/install/build) and declared state steps need their
+    // own room beyond the actor session budget; the sandbox deadline covers the whole lane.
+    const stateBudgetMs = cloneRoute
+      ? (config.subject.state?.seed ?? []).reduce(
+          (sum, step) => sum + (step.timeoutMs ?? DEFAULT_STATE_STEP_TIMEOUT_MS),
+          0
+        )
+      : 0;
     const sandboxTimeoutMs = config.execution?.desktop?.sandboxTimeoutMs
-      ?? timeoutMs + (cloneRoute ? SUBJECT_PROVISION_BUDGET_MS : 0) + SANDBOX_TIMEOUT_BUFFER_MS;
+      ?? timeoutMs + (cloneRoute ? SUBJECT_PROVISION_BUDGET_MS + stateBudgetMs : 0) + SANDBOX_TIMEOUT_BUFFER_MS;
     // The module load lives INSIDE the try: a missing optional peer becomes a structured
     // failed result + persisted failed bundle, never a raw stack out of the CLI.
     let desktopModule: E2BDesktopModule | undefined;
@@ -418,6 +470,7 @@ export async function runCuaActorLab(options: RunCuaActorLabOptions): Promise<Cu
           repo: subjectRepo,
           depth: config.subject.clone?.depth ?? 1,
           serve,
+          ...(config.subject.state === undefined ? {} : { state: config.subject.state }),
           hasGithubToken: subjectEnvNames.includes("GITHUB_TOKEN"),
           requestTimeoutMs,
           scrub: scrubKnownValues,
@@ -425,6 +478,9 @@ export async function runCuaActorLab(options: RunCuaActorLabOptions): Promise<Cu
           // resolves, not only when provisioning returns.
           onCommit: (commit) => {
             subjectCommit = commit;
+          },
+          onStateStep: (record) => {
+            stateStepRecords.push(record);
           },
           ...(hooks.detachedTimers ?? {})
         });
@@ -497,11 +553,20 @@ export async function runCuaActorLab(options: RunCuaActorLabOptions): Promise<Cu
     }
   }
 
+  // The subject's state story (invariant 5): seeded with digests, UNPINNED for declared
+  // external state, declared-not-run for dry-run/failed provisioning, undeclared otherwise.
+  const subjectState = resolveSubjectState({
+    declared: cloneRoute ? config.subject.state : undefined,
+    dryRun,
+    executed: stateStepRecords
+  });
+
   const subjectProvenance = cloneRoute && publicRepo
     ? {
         repo: publicRepo,
         ...(subjectCommit === undefined ? {} : { commit: subjectCommit }),
-        envNames: subjectEnvNames
+        envNames: subjectEnvNames,
+        state: subjectState
       }
     : undefined;
 
@@ -597,9 +662,10 @@ export async function runCuaActorLab(options: RunCuaActorLabOptions): Promise<Cu
           source: "clone",
           repo: publicRepo,
           ...(subjectCommit === undefined ? {} : { commit: subjectCommit }),
-          envNames: subjectEnvNames
+          envNames: subjectEnvNames,
+          state: subjectState
         }
-      : { source: "app-url" },
+      : { source: "app-url", state: subjectState },
     observer,
     warnings: [...warnings, ...observer.warnings],
     ...(ok
@@ -624,9 +690,16 @@ export async function runCuaActorLab(options: RunCuaActorLabOptions): Promise<Cu
 }
 
 /**
- * Provision a clone subject inside the sandbox: clone → (install) → (build) → start →
- * readiness probe. Returns the cloned commit SHA. Throws (with a capped log tail for the
- * caller to redact) on any failing step — the lab persists that as a failed-evidence bundle.
+ * Provision a clone subject inside the sandbox: clone → (install) → state(before-build) →
+ * (build) → state(before-start) → start → readiness probe → state(after-ready). Returns the
+ * cloned commit SHA. Throws (with a capped log tail for the caller to redact) on any failing
+ * step — the lab persists that as a failed-evidence bundle.
+ *
+ * State steps run through the same detached primitive as serve steps (author-trusted, the
+ * "serve commands are author-trusted" corollary) under the reserved `subject-state-<name>`
+ * label prefix, so a step name can never collide with subject-clone/install/build/start.
+ * after-ready steps complete BEFORE the caller opens the browser — the actor never drives a
+ * half-seeded subject and seeding never eats the session budget.
  *
  * Auth: when GITHUB_TOKEN is among the declared subject env names, the clone authenticates
  * via an Authorization header computed IN-SANDBOX from the provisioned env — the token never
@@ -639,17 +712,56 @@ async function provisionCloneSubject(
     repo: string;
     depth: number;
     serve: LabSubjectServe;
+    /** Declared subject state (seed steps; external declaration is provenance-only). */
+    state?: LabSubjectState;
     hasGithubToken: boolean;
     requestTimeoutMs: number;
     /** Literal scrubber for known provisioned values, applied to log tails PRE-truncation. */
     scrub: (text: string) => string;
     /** Called the moment the cloned commit resolves, so provenance survives later failures. */
     onCommit?: (commit: string) => void;
+    /** Called the moment each state step finishes (mirrors onCommit), success or failure. */
+    onStateStep?: (record: RunSubjectStateStepRecord) => void;
   } & DetachedTimers
 ): Promise<string | undefined> {
   const timers: DetachedTimers = {
     ...(args.now === undefined ? {} : { now: args.now }),
     ...(args.sleep === undefined ? {} : { sleep: args.sleep })
+  };
+  const stateSteps = args.state?.seed ?? [];
+  const runStateSteps = async (when: LabStateStepWhen): Promise<void> => {
+    for (const step of stateSteps) {
+      if ((step.when ?? "before-start") !== when) {
+        continue;
+      }
+      const stepTimeoutMs = step.timeoutMs ?? DEFAULT_STATE_STEP_TIMEOUT_MS;
+      const now = args.now ?? Date.now;
+      const startedAt = now();
+      const result = await runDetachedStep(desktop, {
+        name: `subject-state-${step.name}`,
+        command: step.command,
+        cwd: SUBJECT_DIR,
+        timeoutMs: stepTimeoutMs,
+        requestTimeoutMs: args.requestTimeoutMs,
+        ...timers
+      });
+      args.onStateStep?.({
+        name: step.name,
+        when,
+        // Digest only (sha256-16): the command text never persists — the lab YAML in the
+        // consumer's repo is the plaintext source of truth.
+        commandDigest: commandDigestOf(step.command),
+        ok: result.ok,
+        ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
+        ...(result.timedOut ? { timedOut: true } : {}),
+        durationMs: Math.max(0, now() - startedAt)
+      });
+      if (!result.ok) {
+        // Fail closed with the existing scrub-before-truncate tail chain: literal scrub of
+        // every provisioned value PRE-truncation, then pattern redaction + cap in tailOf.
+        throw new Error(`subject state step "${step.name}" ${result.timedOut ? `timed out after ${stepTimeoutMs}ms` : `failed (exit ${result.exitCode})`}: ${tailOf(args.scrub(result.logTail))}`);
+      }
+    }
   };
   const cloneCommand = args.hasGithubToken
     ? `auth=$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0) && git -c http.extraHeader="Authorization: Basic $auth" clone --depth ${args.depth} https://github.com/${args.repo}.git ${SUBJECT_DIR}`
@@ -689,6 +801,10 @@ async function provisionCloneSubject(
     }
   }
 
+  // before-build: after install, before build (builds that read seeded state, e.g. SSG).
+  // When no build is declared this simply precedes start — equivalent to before-start.
+  await runStateSteps("before-build");
+
   if (args.serve.build) {
     const build = await runDetachedStep(desktop, {
       name: "subject-build",
@@ -702,6 +818,11 @@ async function provisionCloneSubject(
       throw new Error(`subject build ${build.timedOut ? "timed out" : `failed (exit ${build.exitCode})`}: ${tailOf(args.scrub(build.logTail))}`);
     }
   }
+
+  // before-start (the default phase): migrations, SQL/file fixtures, an in-sandbox DB server
+  // (`sudo service postgresql start && pg_isready` is a bounded step; the daemon it forks is
+  // reclaimed by the sandbox lifecycle like everything else).
+  await runStateSteps("before-start");
 
   await startDetachedProcess(desktop, {
     name: "subject-start",
@@ -720,7 +841,76 @@ async function provisionCloneSubject(
     throw new Error(`subject did not answer at ${args.serve.url} within ${args.serve.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS}ms; server log tail: ${tailOf(args.scrub(startLog))}`);
   }
 
+  // after-ready: fixture loading through the RUNNING app (loopback curl from in-sandbox —
+  // steps are author-trusted provisioning, not actors, so no new URL policy surface). These
+  // complete before the caller opens the browser and the session timer starts.
+  await runStateSteps("after-ready");
+
   return commit;
+}
+
+/** sha256 hex of the exact command string, first 16 chars (the promptDigest convention). */
+function commandDigestOf(command: string): string {
+  return createHash("sha256").update(command).digest("hex").slice(0, 16);
+}
+
+/**
+ * Resolve the bundle's state marker from the declaration and what actually ran.
+ * Precedence: external declared → "unpinned" (seed records, if any, stay attached — a
+ * migrated external DB is still unpinned overall); else seed declared → "seeded" only when
+ * every declared step executed ok on a live run, otherwise "declared-not-run" (dry-run
+ * contract bundles and failed live provisioning); no declaration → "undeclared".
+ */
+function resolveSubjectState(args: {
+  declared: LabSubjectState | undefined;
+  dryRun: boolean;
+  executed: RunSubjectStateStepRecord[];
+}): RunSubjectProvenance["state"] {
+  const declared = args.declared;
+  if (!declared) {
+    return { provenance: "undeclared" };
+  }
+  const declaredSeed = declared.seed ?? [];
+  const external = declared.external ?? [];
+  // Dry-run: nothing executes (no sandbox) — record the DECLARED recipe: name, phase, and
+  // command digest only, with NO execution fields.
+  const seed: RunSubjectStateStepRecord[] = args.dryRun
+    ? declaredSeed.map((step) => ({
+        name: step.name,
+        when: step.when ?? "before-start",
+        commandDigest: commandDigestOf(step.command)
+      }))
+    : args.executed;
+  const allRanOk = !args.dryRun
+    && declaredSeed.length > 0
+    && seed.length === declaredSeed.length
+    && seed.every((record) => record.ok === true);
+  const provenance: RunSubjectProvenance["state"]["provenance"] = external.length > 0
+    ? "unpinned"
+    : declaredSeed.length === 0
+      ? "undeclared"
+      : allRanOk
+        ? "seeded"
+        : "declared-not-run";
+  return {
+    provenance,
+    ...(seed.length > 0 ? { seed } : {}),
+    ...(external.length > 0 ? { externalEnvNames: external } : {})
+  };
+}
+
+/** The human-readable state story appended to the provenance event (and review.md via it). */
+function describeSubjectState(state: RunSubjectProvenance["state"], dryRun: boolean): string {
+  switch (state.provenance) {
+    case "seeded":
+      return `seeded (${state.seed?.length ?? 0} step(s): ${(state.seed ?? []).map((record) => record.name).join(", ")})`;
+    case "unpinned":
+      return `UNPINNED (external: ${(state.externalEnvNames ?? []).join(", ")})`;
+    case "declared-not-run":
+      return `declared, not run (${dryRun ? "dry-run contract" : "provisioning did not complete"})`;
+    case "undeclared":
+      return "undeclared";
+  }
 }
 
 function tailOf(log: string): string {
@@ -793,8 +983,9 @@ export function buildCuaBundle(args: {
   session?: CuaLoopResult;
   sessionError?: string;
   source: RunBundle["source"];
-  /** Clone-route provenance: what the actor actually drove (names only, never values). */
-  subjectProvenance?: { repo: string; commit?: string; envNames: string[] };
+  /** Clone-route provenance: what the actor actually drove (names + digests only, never
+   * values or command text), including the subject's state story. */
+  subjectProvenance?: { repo: string; commit?: string; envNames: string[]; state: RunSubjectProvenance["state"] };
   traceArtifactPath?: string;
 }): RunBundle {
   const status: RunSimulationStatus = args.session
@@ -899,7 +1090,7 @@ export function buildCuaBundle(args: {
                 ? `Subject cloned from ${args.subjectProvenance.repo}@${args.subjectProvenance.commit} and served at ${args.appUrl} in-sandbox`
                 : `Subject cloned from ${args.subjectProvenance.repo}@${args.subjectProvenance.commit}; serving at ${args.appUrl} did not complete (see session error)`
               : `Subject clone attempted from ${args.subjectProvenance.repo}; commit unresolved (provisioning failed before resolution)`
-          } (subject env names: ${args.subjectProvenance.envNames.length > 0 ? args.subjectProvenance.envNames.join(", ") : "none"}; values never persisted).`,
+          } (subject env names: ${args.subjectProvenance.envNames.length > 0 ? args.subjectProvenance.envNames.join(", ") : "none"}; values never persisted); state: ${describeSubjectState(args.subjectProvenance.state, args.dryRun)}.`,
           simId: "sim-001",
           streamId: "stream-001"
         }
@@ -1000,7 +1191,18 @@ export function buildCuaBundle(args: {
       events: "events.ndjson"
     },
     review,
-    feedbackCandidates: []
+    feedbackCandidates: [],
+    // Structured subject provenance (invariant 5): code pin + state story. Uniform and
+    // honest on app-url bundles too — the caller minted the URL, its state is the caller's.
+    subject: args.subjectProvenance
+      ? {
+          source: "clone",
+          repo: args.subjectProvenance.repo,
+          ...(args.subjectProvenance.commit === undefined ? {} : { commit: args.subjectProvenance.commit }),
+          envNames: args.subjectProvenance.envNames,
+          state: args.subjectProvenance.state
+        }
+      : { source: "app-url", state: { provenance: "undeclared" } }
   };
 }
 

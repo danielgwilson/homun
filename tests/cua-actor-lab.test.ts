@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -167,7 +168,7 @@ function cloneCommandHandler(overrides?: (command: string) => { stdout?: string 
   };
 }
 
-function cloneCuaConfig(extra?: { env?: string[]; readyTimeoutMs?: number }): LabConfig {
+function cloneCuaConfig(extra?: { env?: string[]; readyTimeoutMs?: number; state?: unknown; keep?: boolean }): LabConfig {
   const parsed = parseLabConfig({
     schema: LAB_CONFIG_SCHEMA,
     id: "cua-clone-proof",
@@ -175,7 +176,7 @@ function cloneCuaConfig(extra?: { env?: string[]; readyTimeoutMs?: number }): La
     subject: {
       source: "clone",
       repos: ["example-org/example-app"],
-      clone: { depth: 2 },
+      clone: { depth: 2, ...(extra?.keep === undefined ? {} : { keep: extra.keep }) },
       serve: {
         install: "pnpm install --frozen-lockfile",
         build: "pnpm build",
@@ -183,7 +184,8 @@ function cloneCuaConfig(extra?: { env?: string[]; readyTimeoutMs?: number }): La
         url: "http://127.0.0.1:3000/",
         ...(extra?.readyTimeoutMs === undefined ? {} : { readyTimeoutMs: extra.readyTimeoutMs })
       },
-      ...(extra?.env ? { env: extra.env } : {})
+      ...(extra?.env ? { env: extra.env } : {}),
+      ...(extra?.state === undefined ? {} : { state: extra.state })
     },
     actors: [{ type: "openai-computer-use", persona: "first-time-visitor", mission: "Explore the app and stop." }],
     execution: { target: "e2b-desktop", timeoutMs: 60_000 },
@@ -825,11 +827,13 @@ describe("runCuaActorLab", () => {
     expect(killed).toEqual(["fake-sandbox-001"]);
 
     // Provenance (invariant 5): repo + commit + env NAMES — on the result and in evidence.
+    // No subject.state declared → the state story is explicitly "undeclared", never silent.
     expect(result.subject).toEqual({
       source: "clone",
       repo: "example-org/example-app",
       commit: "abc123def4567890abc1",
-      envNames: ["DATABASE_URL"]
+      envNames: ["DATABASE_URL"],
+      state: { provenance: "undeclared" }
     });
     const runDir = path.join(cwd, ".mimetic", "runs", result.runId);
     const bundle = JSON.parse(await readFile(path.join(runDir, "run.json"), "utf8"));
@@ -1093,6 +1097,338 @@ describe("runCuaActorLab", () => {
       await readFile(path.join(cwd, ".mimetic", "runs", result.runId, "run.json"), "utf8")
     );
     expect(bundle.simulations[0].status).toBe("failed");
+  });
+});
+
+describe("subject.state (seed/migrate/fixtures on the clone route)", () => {
+  let cwd: string;
+
+  beforeEach(async () => {
+    cwd = await mkdtemp(path.join(tmpdir(), "mimetic-cua-state-"));
+  });
+
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  const sha16 = (command: string): string => createHash("sha256").update(command).digest("hex").slice(0, 16);
+
+  const THREE_PHASE_STATE = {
+    seed: [
+      { name: "prebuild", command: "node scripts/prebuild-fixtures.js", when: "before-build", timeoutMs: 300_000 },
+      { name: "db-up", command: "sudo service postgresql start && pg_isready -t 30", timeoutMs: 120_000 },
+      { name: "admin-user", command: "curl -sf -X POST http://127.0.0.1:3000/api/test/bootstrap-admin", when: "after-ready", timeoutMs: 60_000 }
+    ]
+  };
+
+  it("runs seed steps in their declared phases with exact commands, records seeded provenance with digests, and grows the sandbox deadline", async () => {
+    const config = cloneCuaConfig({ state: THREE_PHASE_STATE });
+    const sandbox = makeFakeSandbox({ commandHandler: cloneCommandHandler() });
+    const { module, created, killed } = makeFakeModule(sandbox);
+    const outcome = await runLab(config, {
+      cwd,
+      cuaHooks: {
+        env: { OPENAI_API_KEY: "k1", E2B_API_KEY: "k2" },
+        loadDesktopModule: async () => module,
+        // Fixed clock so per-step durationMs is deterministic (0) in the record assertions.
+        detachedTimers: { now: () => 0, sleep: async () => {} },
+        runSession: async (options) =>
+          runCuaActorSession({ ...options, openai: { apiKey: "k1", fetchFn: scriptedFetch(TWO_TURN_SESSION) } })
+      }
+    });
+    if (outcome.backend !== "cua") throw new Error("expected cua backend");
+    const result = outcome.result;
+    expect(result.ok).toBe(true);
+    expect(killed).toEqual(["fake-sandbox-001"]);
+
+    // Each step runs through the detached primitive under the reserved prefix, with the
+    // EXACT declared command and cwd inside the subject checkout.
+    const writeIndexFor = (name: string): number =>
+      sandbox.calls.findIndex((call) => call[0] === "files.write" && String(call[1]).endsWith(`${name}/run.sh`));
+    const scriptFor = (name: string): string => {
+      const entry = sandbox.calls.find(
+        (call): call is [string, string, string] => call[0] === "files.write" && String(call[1]).endsWith(`${name}/run.sh`)
+      );
+      if (!entry) throw new Error(`missing script for ${name}`);
+      return entry[2];
+    };
+    expect(scriptFor("subject-state-db-up")).toContain("( sudo service postgresql start && pg_isready -t 30 )");
+    expect(scriptFor("subject-state-db-up")).toContain("cd '/home/user/subject'");
+    expect(scriptFor("subject-state-admin-user")).toContain("bootstrap-admin");
+
+    // Phase ordering from the recorded call sequence: install → before-build → build →
+    // before-start → start → readiness probe → after-ready → browser open.
+    const probeIndex = sandbox.calls.findIndex(
+      (call) => call[0] === "commands.run" && String(call[1]).includes("curl -sf -o /dev/null")
+    );
+    const openIndex = sandbox.calls.findIndex((call) => call[0] === "open");
+    expect(writeIndexFor("subject-install")).toBeLessThan(writeIndexFor("subject-state-prebuild"));
+    expect(writeIndexFor("subject-state-prebuild")).toBeLessThan(writeIndexFor("subject-build"));
+    expect(writeIndexFor("subject-build")).toBeLessThan(writeIndexFor("subject-state-db-up"));
+    expect(writeIndexFor("subject-state-db-up")).toBeLessThan(writeIndexFor("subject-start"));
+    expect(writeIndexFor("subject-start")).toBeLessThan(probeIndex);
+    expect(probeIndex).toBeLessThan(writeIndexFor("subject-state-admin-user"));
+    expect(writeIndexFor("subject-state-admin-user")).toBeLessThan(openIndex);
+
+    // The default sandbox deadline grows by the declared state budget.
+    expect(created[0]?.timeoutMs).toBe(
+      60_000 // execution.timeoutMs
+      + 30 * 60_000 // SUBJECT_PROVISION_BUDGET_MS
+      + (300_000 + 120_000 + 60_000) // Σ step.timeoutMs
+      + 10 * 60_000 // SANDBOX_TIMEOUT_BUFFER_MS
+    );
+
+    // Provenance: marker seeded, per-step records with sha256-16 digests of the EXACT
+    // commands — and never the command text itself.
+    const expectedSeed = [
+      { name: "prebuild", when: "before-build", commandDigest: sha16("node scripts/prebuild-fixtures.js"), ok: true, exitCode: 0, durationMs: 0 },
+      { name: "db-up", when: "before-start", commandDigest: sha16("sudo service postgresql start && pg_isready -t 30"), ok: true, exitCode: 0, durationMs: 0 },
+      { name: "admin-user", when: "after-ready", commandDigest: sha16("curl -sf -X POST http://127.0.0.1:3000/api/test/bootstrap-admin"), ok: true, exitCode: 0, durationMs: 0 }
+    ];
+    expect(result.subject?.state).toEqual({ provenance: "seeded", seed: expectedSeed });
+
+    const runDir = path.join(cwd, ".mimetic", "runs", result.runId);
+    const bundle = JSON.parse(await readFile(path.join(runDir, "run.json"), "utf8"));
+    expect(bundle.subject).toEqual({
+      source: "clone",
+      repo: "example-org/example-app",
+      commit: "abc123def4567890abc1",
+      envNames: [],
+      state: { provenance: "seeded", seed: expectedSeed }
+    });
+    const provenance = bundle.events.find((event: { type: string }) => event.type === "cua-lab.subject.provenance");
+    expect(provenance?.message).toContain("state: seeded (3 step(s): prebuild, db-up, admin-user)");
+    const reviewMd = await readFile(path.join(runDir, "review.md"), "utf8");
+    expect(reviewMd).toContain("state: seeded");
+    for (const file of ["run.json", "review.md", "events.ndjson"]) {
+      const text = await readFile(path.join(runDir, file), "utf8");
+      expect(text, file).not.toContain("pg_isready"); // digests only — never command text
+      expect(text, file).not.toContain("prebuild-fixtures.js");
+    }
+
+    // The independent verifier accepts the seeded claim against its evidence.
+    const verified = await verifyRun(cwd, result.runId);
+    expect(verified.ok).toBe(true);
+    expect(verified.checks.find((check) => check.name === "subject state provenance")?.ok).toBe(true);
+    // No undeclared-state nudge: the state story IS declared.
+    expect(verified.warnings.some((w) => w.includes("no state story"))).toBe(false);
+  });
+
+  it("fails closed on a mid-sequence step failure: partial provenance, no actor session, scrubbed tail, failed bundle that still verifies", async () => {
+    const plainValue = "plain-state-pw-" + "87654321";
+    const config = cloneCuaConfig({
+      env: ["DATABASE_PASSWORD"],
+      state: {
+        seed: [
+          { name: "db-up", command: "start the db" },
+          { name: "db-migrate", command: "run migrations" },
+          { name: "fixtures", command: "load fixtures" }
+        ]
+      }
+    });
+    let sessionStarted = false;
+    const sandbox = makeFakeSandbox({
+      commandHandler: cloneCommandHandler((command) => {
+        if (command.includes("subject-state-db-migrate/status")) return { stdout: "1" };
+        if (command.includes("subject-state-db-migrate") && command.includes("tail -c")) {
+          return { stdout: `migration blew up: DATABASE_PASSWORD=${plainValue}` };
+        }
+        return undefined;
+      })
+    });
+    const { module, killed } = makeFakeModule(sandbox);
+    const outcome = await runLab(config, {
+      cwd,
+      cuaHooks: {
+        env: { OPENAI_API_KEY: "k1", E2B_API_KEY: "k2", DATABASE_PASSWORD: plainValue },
+        loadDesktopModule: async () => module,
+        detachedTimers: { now: () => 0, sleep: async () => {} },
+        runSession: async () => {
+          sessionStarted = true;
+          throw new Error("session must never start after a failed state step");
+        }
+      }
+    });
+    if (outcome.backend !== "cua") throw new Error("expected cua backend");
+    const result = outcome.result;
+
+    expect(result.ok).toBe(false);
+    expect(sessionStarted).toBe(false);
+    expect(killed).toEqual(["fake-sandbox-001"]);
+    expect(result.error?.message).toContain('subject state step "db-migrate" failed (exit 1)');
+    expect(result.error?.message).toContain("[REDACTED_SECRET]");
+    expect(result.error?.message).not.toContain(plainValue);
+
+    // Partial state provenance: the succeeded step ok:true, the failing step ok:false with
+    // its exit code, the unreached step ABSENT — and the marker stays honest.
+    expect(result.subject?.state.provenance).toBe("declared-not-run");
+    expect(result.subject?.state.seed).toEqual([
+      { name: "db-up", when: "before-start", commandDigest: sha16("start the db"), ok: true, exitCode: 0, durationMs: 0 },
+      { name: "db-migrate", when: "before-start", commandDigest: sha16("run migrations"), ok: false, exitCode: 1, durationMs: 0 }
+    ]);
+
+    const runDir = path.join(cwd, ".mimetic", "runs", result.runId);
+    const bundle = JSON.parse(await readFile(path.join(runDir, "run.json"), "utf8"));
+    expect(bundle.simulations[0].status).toBe("failed");
+    expect(bundle.review.verdict).toBe("fail");
+    expect(bundle.subject.state.provenance).toBe("declared-not-run");
+    expect(bundle.subject.state.seed).toHaveLength(2);
+
+    // The provisioned value never reaches any artifact (literal scrub pre-truncation).
+    for (const file of ["run.json", "review.json", "review.md", "events.ndjson"]) {
+      const text = await readFile(path.join(runDir, file), "utf8");
+      expect(text, file).not.toContain(plainValue);
+    }
+
+    // A FAILED bundle with honest partial provenance still verifies its state claim
+    // (verdict is fail, so the passed-live-with-failed-step rule does not trip).
+    const verified = await verifyRun(cwd, result.runId);
+    expect(verified.checks.find((check) => check.name === "subject state provenance")?.ok).toBe(true);
+  });
+
+  it("times out a hung state step (kill + timedOut record) and honors clone.keep on that failure", async () => {
+    const config = cloneCuaConfig({
+      keep: true,
+      state: { seed: [{ name: "slow", command: "sleep forever", timeoutMs: 5_000 }] }
+    });
+    let t = 0;
+    const sandbox = makeFakeSandbox({
+      commandHandler: cloneCommandHandler((command) => {
+        if (command.includes("subject-state-slow/status")) return { stdout: "" };
+        if (command.includes("subject-state-slow") && command.includes("tail -c")) return { stdout: "still sleeping" };
+        return undefined;
+      })
+    });
+    const { module, killed } = makeFakeModule(sandbox);
+    const outcome = await runLab(config, {
+      cwd,
+      cuaHooks: {
+        env: { OPENAI_API_KEY: "k1", E2B_API_KEY: "k2" },
+        loadDesktopModule: async () => module,
+        detachedTimers: { now: () => t, sleep: async (ms: number) => { t += ms; } }
+      }
+    });
+    if (outcome.backend !== "cua") throw new Error("expected cua backend");
+    const result = outcome.result;
+    expect(result.ok).toBe(false);
+    expect(result.error?.message).toContain('subject state step "slow" timed out after 5000ms');
+    expect(result.subject?.state.seed?.[0]).toMatchObject({ name: "slow", ok: false, timedOut: true });
+    // keep-on-failure applies to state failures exactly as to serve failures.
+    expect(killed).toEqual([]);
+    expect(result.warnings.some((w) => w.includes("kept for debugging"))).toBe(true);
+  });
+
+  it("dry-run records the DECLARED recipe as declared-not-run: digests and phases only, no execution fields, honest event wording", async () => {
+    const outcome = await runLab(cloneCuaConfig({ state: THREE_PHASE_STATE }), { cwd, dryRun: true });
+    if (outcome.backend !== "cua") throw new Error("expected cua backend");
+    const result = outcome.result;
+    expect(result.ok).toBe(true);
+
+    expect(result.subject?.state).toEqual({
+      provenance: "declared-not-run",
+      seed: [
+        { name: "prebuild", when: "before-build", commandDigest: sha16("node scripts/prebuild-fixtures.js") },
+        { name: "db-up", when: "before-start", commandDigest: sha16("sudo service postgresql start && pg_isready -t 30") },
+        { name: "admin-user", when: "after-ready", commandDigest: sha16("curl -sf -X POST http://127.0.0.1:3000/api/test/bootstrap-admin") }
+      ]
+    });
+
+    const runDir = path.join(cwd, ".mimetic", "runs", result.runId);
+    const bundle = JSON.parse(await readFile(path.join(runDir, "run.json"), "utf8"));
+    expect(bundle.mode).toBe("dry-run");
+    expect(bundle.subject.state.provenance).toBe("declared-not-run");
+    expect(bundle.subject.state.seed.every((record: Record<string, unknown>) => !("ok" in record))).toBe(true);
+    const provenance = bundle.events.find((event: { type: string }) => event.type === "cua-lab.subject.provenance");
+    expect(provenance?.message).toContain("state: declared, not run (dry-run contract)");
+
+    // The contract bundle verifies — declared-not-run is the honest dry-run marker.
+    const verified = await verifyRun(cwd, result.runId);
+    expect(verified.ok).toBe(true);
+    expect(verified.checks.find((check) => check.name === "subject state provenance")?.ok).toBe(true);
+  });
+
+  it("declared external state records UNPINNED provenance (seed digests still attached when both are declared)", async () => {
+    const config = cloneCuaConfig({
+      env: ["DATABASE_URL"],
+      state: { seed: [{ name: "db-migrate", command: "run migrations" }], external: ["DATABASE_URL"] }
+    });
+    const sandbox = makeFakeSandbox({ commandHandler: cloneCommandHandler() });
+    const { module } = makeFakeModule(sandbox);
+    const outcome = await runLab(config, {
+      cwd,
+      cuaHooks: {
+        env: { OPENAI_API_KEY: "k1", E2B_API_KEY: "k2", DATABASE_URL: "postgres-external-value" },
+        loadDesktopModule: async () => module,
+        runSession: async (options) =>
+          runCuaActorSession({ ...options, openai: { apiKey: "k1", fetchFn: scriptedFetch(TWO_TURN_SESSION) } })
+      }
+    });
+    if (outcome.backend !== "cua") throw new Error("expected cua backend");
+    const result = outcome.result;
+    expect(result.ok).toBe(true);
+
+    // Migrating an external DB is still unpinned overall: marker unpinned, digests attached.
+    expect(result.subject?.state.provenance).toBe("unpinned");
+    expect(result.subject?.state.externalEnvNames).toEqual(["DATABASE_URL"]);
+    expect(result.subject?.state.seed?.[0]).toMatchObject({ name: "db-migrate", ok: true });
+
+    const runDir = path.join(cwd, ".mimetic", "runs", result.runId);
+    const bundle = JSON.parse(await readFile(path.join(runDir, "run.json"), "utf8"));
+    const provenance = bundle.events.find((event: { type: string }) => event.type === "cua-lab.subject.provenance");
+    expect(provenance?.message).toContain("state: UNPINNED (external: DATABASE_URL)");
+    for (const file of ["run.json", "review.md", "events.ndjson"]) {
+      const text = await readFile(path.join(runDir, file), "utf8");
+      expect(text, file).not.toContain("postgres-external-value");
+    }
+    const verified = await verifyRun(cwd, result.runId);
+    expect(verified.ok).toBe(true);
+    expect(verified.checks.find((check) => check.name === "subject state provenance")?.ok).toBe(true);
+  });
+
+  it("app-url bundles carry the uniform subject block: source app-url, state undeclared", async () => {
+    const outcome = await runLab(cuaConfig(), { cwd, dryRun: true });
+    if (outcome.backend !== "cua") throw new Error("expected cua backend");
+    const result = outcome.result;
+    expect(result.subject).toEqual({ source: "app-url", state: { provenance: "undeclared" } });
+    const bundle = JSON.parse(
+      await readFile(path.join(cwd, ".mimetic", "runs", result.runId, "run.json"), "utf8")
+    );
+    expect(bundle.subject).toEqual({ source: "app-url", state: { provenance: "undeclared" } });
+  });
+
+  it("re-enforces the state declaration at the engine for configs that bypass the parser", async () => {
+    const base = cloneCuaConfig();
+    const tamper = (state: unknown): LabConfig =>
+      ({ ...base, subject: { ...base.subject, state } }) as LabConfig;
+
+    // Bad step name (interpolates into in-sandbox paths — must fail closed).
+    const badName = await runCuaActorLab({ cwd, config: tamper({ seed: [{ name: "Bad Name!", command: "true" }] }), dryRun: true });
+    expect(badName.ok).toBe(false);
+    expect(badName.error?.code).toBe("MIMETIC_CUA_LAB_SUBJECT_INVALID");
+    expect(badName.runId).toBe("not-created");
+
+    // Duplicate step names.
+    const dupe = await runCuaActorLab({
+      cwd,
+      config: tamper({ seed: [{ name: "a", command: "true" }, { name: "a", command: "false" }] }),
+      dryRun: true
+    });
+    expect(dupe.error?.code).toBe("MIMETIC_CUA_LAB_SUBJECT_INVALID");
+
+    // external must name a provisioned channel (subset of subject.env).
+    const unbacked = await runCuaActorLab({ cwd, config: tamper({ external: ["REDIS_URL"] }), dryRun: true });
+    expect(unbacked.error?.code).toBe("MIMETIC_CUA_LAB_SUBJECT_INVALID");
+
+    // state on an app-url subject is rejected, never silently inert (invariant 6).
+    const appUrlBase = cuaConfig();
+    const appUrlTampered = {
+      ...appUrlBase,
+      subject: { ...appUrlBase.subject, state: { seed: [{ name: "a", command: "true" }] } }
+    } as LabConfig;
+    const onAppUrl = await runCuaActorLab({ cwd, config: appUrlTampered, dryRun: true });
+    expect(onAppUrl.ok).toBe(false);
+    expect(onAppUrl.error?.code).toBe("MIMETIC_CUA_LAB_SUBJECT_INVALID");
+    expect(onAppUrl.error?.message).toContain("clone subjects");
   });
 });
 
