@@ -12,6 +12,8 @@ import type { E2BDesktopLike } from "../src/e2b-desktop-executor.js";
 // The target is a local file:// page written INTO the sandbox (network-free, public-safe).
 // Deliberately asserts only "a conformant, redacted trace with a terminal status came back" —
 // never task success, which would be flaky against a live model.
+// Fixture refreshes: additionally set MIMETIC_CUA_WIRE_CAPTURE_DIR to a gitignored dir (e.g.
+// under .mimetic/) to capture redacted RESPONSE wire bodies — see src/openai-responses-cu.ts.
 const LIVE = process.env.MIMETIC_LIVE_CUA === "1"
   && Boolean(process.env.OPENAI_API_KEY)
   && Boolean(process.env.E2B_API_KEY);

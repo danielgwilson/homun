@@ -16,6 +16,8 @@ import { runLab } from "../src/lab-engine.js";
 //   3. @e2b/desktop is loaded lazily inside the lab (never imported when skipped).
 // The subject repo is a tiny, long-stable MDN sample site (public, no build step). Asserts a
 // verified bundle with provenance and a terminal session — never task success.
+// Fixture refreshes: additionally set MIMETIC_CUA_WIRE_CAPTURE_DIR to a gitignored dir (e.g.
+// under .mimetic/) to capture redacted RESPONSE wire bodies — see src/openai-responses-cu.ts.
 const LIVE = process.env.MIMETIC_LIVE_CUA === "1"
   && Boolean(process.env.OPENAI_API_KEY)
   && Boolean(process.env.E2B_API_KEY);

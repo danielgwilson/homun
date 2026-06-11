@@ -17,6 +17,8 @@ import { runLab } from "../src/lab-engine.js";
 // The subject is a loopback page served INSIDE the sandbox, provisioned via the prepareDesktop
 // hook — the documented seam for app-url subjects until clone+serve lands. Asserts only that a
 // verified bundle with a terminal, conformant, redacted session came back — never task success.
+// Fixture refreshes: additionally set MIMETIC_CUA_WIRE_CAPTURE_DIR to a gitignored dir (e.g.
+// under .mimetic/) to capture redacted RESPONSE wire bodies — see src/openai-responses-cu.ts.
 const LIVE = process.env.MIMETIC_LIVE_CUA === "1"
   && Boolean(process.env.OPENAI_API_KEY)
   && Boolean(process.env.E2B_API_KEY);
