@@ -1,5 +1,9 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+
 import type { ActorCapabilities } from "./actor-contract.js";
 import type { CuaAction, CuaProvider, CuaSafetyCheck, CuaTurn, CuaTurnRequest } from "./computer-use.js";
+import { redactText } from "./redaction.js";
 
 // A public-safe re-derivation of the OpenAI Responses API computer-use provider,
 // behind the CuaProvider port from src/computer-use.ts. It mirrors the
@@ -20,6 +24,26 @@ import type { CuaAction, CuaProvider, CuaSafetyCheck, CuaTurn, CuaTurnRequest } 
 // and screenshots are never logged or returned; nextTurn returns ONLY a CuaTurn,
 // and the engine handles redaction of CuaTurn fields downstream. Error messages
 // carry the HTTP status only, never the response body (it can echo the input).
+//
+// Wire capture (fixture provenance). The 0.6.1 parser incident — the parser read
+// `computer_call.action` (singular) while the live API returns `actions` (array),
+// and the hand-written fixtures encoded the SAME wrong shape, so tests passed in
+// lockstep with the bug while every live action was silently dropped — taught us
+// that deterministic fixtures must derive from CAPTURED live wire shapes, never
+// from memory. Setting MIMETIC_CUA_WIRE_CAPTURE_DIR makes the live shim persist
+// each successful Responses RESPONSE body into that directory as pretty-printed
+// JSON, one file per provider call in call order (wire-001.json, wire-002.json,
+// ...), for refreshing fixtures. The capture seam is:
+//  - OPT-IN: unset (or empty) env means zero behavior change — nothing is written;
+//  - RESPONSE-side only: request bodies carry base64 screenshots and the persona
+//    instructions and are NEVER captured; non-ok response bodies can echo the
+//    request and are never captured either;
+//  - REDACTED: every string field (keys and values) passes through the shared
+//    redactText (src/redaction.ts) before writing, so a secret-shaped echo in a
+//    response cannot persist to disk.
+// Point the env var at a gitignored path (e.g. under .mimetic/): raw captures must
+// never be committed — fixtures derived from them must be minimal, hand-reviewed
+// excerpts checked into tests deliberately.
 
 export const OPENAI_RESPONSES_CU_CAPABILITIES: ActorCapabilities = {
   headless: true,
@@ -338,6 +362,34 @@ export function buildContinuationRequest(args: ContinuationRequestArgs): Record<
 }
 
 // ---------------------------------------------------------------------------
+// Wire capture (see the module header). Pure helpers, exported for unit tests.
+// ---------------------------------------------------------------------------
+
+/** The opt-in gate for response wire capture: a directory path, or unset for off. */
+export const WIRE_CAPTURE_ENV = "MIMETIC_CUA_WIRE_CAPTURE_DIR";
+
+/**
+ * Deep-copy a captured wire value with every string — object keys included —
+ * passed through the shared redactText, so a secret-shaped echo in a response
+ * can never persist to disk. Pure; non-string primitives pass through unchanged.
+ */
+export function redactWireJson(value: unknown): unknown {
+  if (typeof value === "string") return redactText(value);
+  if (Array.isArray(value)) return value.map(redactWireJson);
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [redactText(key), redactWireJson(entry)])
+    );
+  }
+  return value;
+}
+
+/** Deterministic ordered capture file name for the 1-based nth provider call. */
+export function wireCaptureFileName(callNumber: number): string {
+  return `wire-${String(callNumber).padStart(3, "0")}.json`;
+}
+
+// ---------------------------------------------------------------------------
 // Live shim: a stateful CuaProvider over a raw POST to the Responses endpoint.
 // ---------------------------------------------------------------------------
 
@@ -361,6 +413,12 @@ export interface OpenAiResponsesProviderOptions {
   maxRetries?: number;
   delayFn?: (ms: number) => Promise<void>;
   zeroDataRetention?: boolean;
+  /**
+   * Environment for the wire-capture gate (MIMETIC_CUA_WIRE_CAPTURE_DIR — see the
+   * module header). Injectable so deterministic tests control the gate without
+   * mutating process.env. Defaults to process.env.
+   */
+  env?: Record<string, string | undefined>;
 }
 
 // A typed error so nextTurn can distinguish a ZDR-policy rejection (recoverable
@@ -421,6 +479,24 @@ export function createOpenAiResponsesProvider(options: OpenAiResponsesProviderOp
   const maxRetries = options.maxRetries ?? 3;
   const fetchFn = options.fetchFn ?? defaultFetch();
   const delayFn = options.delayFn ?? defaultDelay;
+  // Opt-in response wire capture (see module header): unset/empty means OFF and
+  // zero behavior change. The counter is per-provider, so file order is call order.
+  const captureDir = optionalString((options.env ?? process.env)[WIRE_CAPTURE_ENV]?.trim());
+  let captureCount = 0;
+
+  // Persist one successful RESPONSE body, redacted and pretty-printed. Fails loud:
+  // a silent capture failure would mean missing turns in a fixture refresh — the
+  // exact "fixtures drift from the wire" pathology capture exists to prevent.
+  const captureResponse = async (raw: unknown): Promise<void> => {
+    if (captureDir === undefined) return;
+    captureCount += 1;
+    await mkdir(captureDir, { recursive: true });
+    await writeFile(
+      path.join(captureDir, wireCaptureFileName(captureCount)),
+      `${JSON.stringify(redactWireJson(raw), null, 2)}\n`,
+      "utf8"
+    );
+  };
 
   let lastResponseId: string | undefined;
   let pendingCallIds: string[] = [];
@@ -453,7 +529,11 @@ export function createOpenAiResponsesProvider(options: OpenAiResponsesProviderOp
         ...(signal === undefined ? {} : { signal })
       });
       if (res.ok) {
-        return res.json();
+        const parsed: unknown = await res.json();
+        // Capture AFTER ok and BEFORE parse-to-CuaTurn: responses only, never the
+        // request (screenshots/instructions) and never a non-ok body (input echo).
+        await captureResponse(parsed);
+        return parsed;
       }
       lastStatus = res.status;
       if (res.status === 400) {
