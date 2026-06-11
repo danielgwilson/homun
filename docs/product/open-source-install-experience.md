@@ -98,14 +98,18 @@ Labs are the public-safe way to name a reusable simulation run. A starter app
 gets a committed synthetic lab:
 
 ```yaml
-schema: mimetic.lab.v1
+schema: mimetic.lab.v2
 id: first-run
-kind: synthetic
 title: First-run synthetic Observer
 description: Public-safe starter lab that generates a synthetic run bundle and Observer without provider spend.
-sims: 4
+subject:
+  source: this-repo
+actors:
+  - type: synthetic-persona
+    count: 4
+scenario:
+  mode: dry-run
 defaults:
-  dryRun: true
   open: true
 ```
 
@@ -164,7 +168,7 @@ Suggested scripts:
 | `mimetic watch [lab]` | Run a named lab and watch it | Resolve committed or ignored `.yaml` lab manifests, then open/follow Observer |
 | `mimetic watch --json --no-open` | Agent/CI proof path | Create the same bundle and Observer artifacts without browser open or attached watch server |
 | `mimetic lab list` | Discover available labs | List committed labs and ignored local labs with origin labels |
-| `mimetic lab inspect <lab>` | Read a lab manifest | Print lab id, kind, path, defaults, repos, and warnings without executing |
+| `mimetic lab inspect <lab>` | Read a lab manifest | Print the parsed lab config, origin, path, and warnings without executing |
 | `mimetic lab run <lab>` | Run a lab manifest | Human or JSON execution path for synthetic, OSS meta, and smoke labs |
 | `mimetic lab run oss` | Maintainer dogfood example | Open the Observer-of-Observers with headed desktop lanes assigned by `--repos`, target app windows, nested Observers, runtime-only stream URLs, and redacted durable evidence for token-backed runs |
 | `mimetic lab run oss-smoke` | Maintainer smoke example | Shallow clone lightweight GitHub repos, run setup/proof/verify, report, and remove clones |

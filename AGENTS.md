@@ -66,5 +66,12 @@ private patient data, or private source snippets.
 - Harness changes need tests or fixture artifacts that prove the contract.
 - Adapter changes need at least one safe dry-run path and one realistic path
   where credentials allow it.
+- Any "live-proven" claim in a PR body must cite a kept receipt — a
+  `docs/goals/<goal>/receipts/` entry or a retained run id. Narrative alone is
+  not proof.
+- Provider-API test fixtures must derive from captured live wire shapes, never
+  hand-authored from memory. A fixture written from memory can encode the same
+  wrong field name as the code and pass in lockstep — that is how the 0.6.1
+  parser bug shipped with green tests.
 - End substantial work with what changed, what was checked, and what remains
   uncertain.

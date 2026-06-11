@@ -18,9 +18,11 @@ certify (see the conformance suite).
    persisting, because SDK error strings can echo secrets. The enforcement point is the
    PUBLISH/VERIFY boundary, not capture: a local run's text artifacts are scrubbed of
    secret-shaped values unconditionally, and raw screenshots (which may render on-screen
-   content) are retained locally under gitignored `.mimetic/`, blocked from commit by the
-   binary-asset scan, and never emitted by a publish command (feedback/review carry path
-   strings, not pixels). To share a bundle as-is, set `policies.redactScreenshots: true` (blurs
+   content) are retained locally under gitignored `.mimetic/` and never emitted by a publish
+   command (feedback/review carry path strings, not pixels). In this repo the CI binary-asset
+   scan additionally blocks them from commit; downstream projects do not get that scan — their
+   protection is the init-scaffolded `.gitignore` plus their own review. To share a bundle
+   as-is, set `policies.redactScreenshots: true` (blurs
    at capture); a redact-on-export step for already-captured raw bundles is planned, not yet
    shipped. (See "the capture-vs-publish rule" below — blurring frames at *capture* was a
    default mistaken for this invariant.)
@@ -57,7 +59,7 @@ silently drifting from one is not.
 | Per-lane worlds | Isolation, attribution, reproducibility | Shared-world topology for scenarios that ARE about interaction between personas |
 | External key placement | Smallest blast radius: when the keyed process (e.g. a computer-use provider loop) runs outside the sandbox, its key never enters | In-sandbox placement when the keyed process runs inside (an agent harness under test); declared per actor type, with a spend budget |
 | Loopback entry URLs | Public-safety: never drive third-party sites unbidden | `policies.allowPublicTargets` for an owner-declared deployment/preview (a Vercel preview of your own app); provisioned clone subjects always serve in-sandbox on loopback |
-| Full-fidelity screenshots, local | The common case is watching a sim of your OWN app locally; blur destroys the deliverable. Raw frames live in gitignored `.mimetic/`, blocked from commit by the binary-asset scan | `policies.redactScreenshots: true` blurs at capture for share-as-is bundles (a redact-on-export step for raw bundles is planned) |
+| Full-fidelity screenshots, local | The common case is watching a sim of your OWN app locally; blur destroys the deliverable. Raw frames live in gitignored `.mimetic/` (this repo's CI adds a binary-asset commit scan; downstream projects rely on the scaffolded `.gitignore` and their own review) | `policies.redactScreenshots: true` blurs at capture for share-as-is bundles (a redact-on-export step for raw bundles is planned) |
 | Synthetic, seeded state | Pinned provenance; no real user data in evidence paths | Declared external state, recorded as UNPINNED in provenance |
 | Single lane | Cost + evidence simplicity | Declared fan-out where the backend supports it |
 

@@ -1,10 +1,23 @@
 # Actor Contract
 
-Date: 2026-06-06
+Date: 2026-06-06 (updated 2026-06-11)
 
-Status: accepted design; implementation staged behind this document.
+Status: accepted design, partially implemented. Shipped: the evidence schema
+`mimetic.actor-trace.v1` (`src/actor-contract.ts`) and a registry of four
+actors (`src/actor-registry.ts`: `codex-app-server`, `pi-agent-core`,
+`claude-agent-sdk`, `openai-computer-use`), with `actors[0].type` a real
+dispatch key on the computer-use lab routes. Not yet shipped (roadmap, not
+near-term claims): the full `Actor.run(input)` interface, `RedactionHooks`
+injection, `ApprovalPolicy`, `StagehandCuaActor`, and the `persona-fidelity`
+verify check. Decision 6's capture-time screenshot stance was recanted in
+0.6.0; see the inline notes and the capture-vs-publish rule in
+[`docs/principles/invariants-and-defaults.md`](../principles/invariants-and-defaults.md).
 
 ## Context
+
+> 2026-06-11: this section describes the world as it stood when the design was
+> accepted (one real actor, hardcoded dispatch). That ceiling has since been
+> removed — the registry now holds the four actors listed in the status note.
 
 An actor is the thing that drives a persona scenario and produces evidence. Today
 Mimetic has exactly one real actor: the local Codex integration in
@@ -61,11 +74,19 @@ API surface.
    journey) will not be dispatched to a code-only actor that would fake success
    via the shell. Coverage honesty over green-by-construction.
 
-6. **Computer-use is one lane behind one adapter.** A single `StagehandCuaActor`
-   fronts the volatile raw-pixel providers (OpenAI computer-use, Anthropic
-   computer-use, Gemini). Screenshots are the largest new public-safety surface
-   and are field-blurred plus OCR-scrubbed before any public artifact; full
-   frames stay in the gitignored `.mimetic/` tree.
+6. **Computer-use is one lane behind one adapter.** The shipped computer-use
+   actor is `openai-computer-use` (fronting the OpenAI Responses adapter); a
+   `StagehandCuaActor` fronting the other raw-pixel providers (Anthropic
+   computer-use, Gemini) is not-yet-shipped roadmap. Screenshots are the
+   largest new public-safety surface, and the original stance here
+   (field-blurred plus OCR-scrubbed before any public artifact, fail-closed)
+   enforced a default at capture-time; 0.6.0 recanted it. Current policy:
+   frames are retained raw and full-fidelity by default in the gitignored
+   `.mimetic/` tree (never emitted by a publish command; this repo's CI
+   binary-asset scan additionally blocks them from commit), and
+   `policies.redactScreenshots: true` blurs at capture for share-as-is
+   bundles. See the capture-vs-publish rule in
+   [`docs/principles/invariants-and-defaults.md`](../principles/invariants-and-defaults.md).
 
 ## The contract
 
@@ -112,12 +133,14 @@ export interface ActorCapabilities {
 
 export interface ActorTrace {
   schema: typeof ACTOR_TRACE_SCHEMA;
-  provider: string;              // "codex-app-server" | "pi-agent-core" | "claude-agent-sdk" | "stagehand-cua"
+  provider: string;              // "codex-app-server" | "pi-agent-core" | "claude-agent-sdk" | "openai-responses-cu"
   providerVersion?: string;
   protocol: "json-rpc" | "json-stream" | "in-process-sdk" | "cua-loop";
   lane: "code" | "app" | "computer-use";
   persona: { id: string; traitsApplied: string[]; promptDigest: string };  // proves traits were threaded
-  redaction: { status: "passed"; screenshots: "n/a" | "blurred" | "ocr_scrubbed"; notes: string };
+  // "raw" = full-fidelity frames retained (valid for LOCAL use; redact before
+  // publishing); "blurred"/"ocr_scrubbed" = publish-safe; "n/a" = none captured.
+  redaction: { status: "passed"; screenshots: "n/a" | "raw" | "blurred" | "ocr_scrubbed"; notes: string };
   startedAt: string; completedAt: string; durationMs: number;
   status: ActorStatus; completionReason: ActorCompletionReason; reason: string;
   ids: { sessionId?: string; threadId?: string; turnId?: string; model?: string };
@@ -234,6 +257,10 @@ Plan:
    accessibility directives reached the actor input and that a `gave_up` run
    cites a concrete friction reason (not a turn count). "Did the persona drive
    the run" becomes a verifiable artifact, not an assertion.
+   (Status 2026-06-11: `personaToDirectives` shipped in `src/persona.ts` and
+   `traitsApplied` is threaded on the codex routes, but the `persona-fidelity`
+   verify check is not-yet-shipped roadmap, and the computer-use route stubs
+   `persona.traitsApplied` to `[]` today — see `src/cua-actor-lab.ts`.)
 
 ## Decision: how abandonment is adjudicated
 
@@ -286,7 +313,7 @@ turns as a stop signal.
 | codex-app-server (reference) | yes (stdio JSON-RPC) | typed item/* | OS Seatbelt/seccomp + approvalPolicy | OpenAI-first | Apache-2.0 | code |
 | pi-agent-core (first new) | yes (SDK + rpc/json) | event stream + session JSONL + token/cost | BYO container + hook gating | 15+ providers, local | MIT | code, app |
 | claude-agent-sdk | yes (SDK + `-p` stream-json) | typed ToolUse/ToolResult + cost | OS sandbox + dontAsk/allowedTools | Anthropic-centric | SDK MIT (CLI proprietary) | code, app |
-| stagehand-cua | yes (SDK, mode:'cua') | structured results + replay | Playwright/Browserbase isolation | OpenAI/Anthropic/Google | MIT | computer-use |
+| stagehand-cua (roadmap, not shipped; `openai-computer-use` is the shipped computer-use actor) | yes (SDK, mode:'cua') | structured results + replay | Playwright/Browserbase isolation | OpenAI/Anthropic/Google | MIT | computer-use |
 
 ## Sequencing
 
@@ -307,7 +334,9 @@ turns as a stop signal.
    `@mariozechner/pi-coding-agent`) and the Node `>=22.19` vs engines `>=20` gap
    are pinned against an installed build.
 5. `claude-agent-sdk` adapter (the `app` lane).
-6. `stagehand-cua` computer-use lane plus `redactScreenshot`.
+6. Computer-use lane. (Shipped as `openai-computer-use` — registered 0.3.0,
+   lab-dispatched 0.4.0; `stagehand-cua` as a multi-provider front remains
+   not-yet-shipped roadmap.)
 7. Cross-harness conformance test: one persona x scenario through every adapter,
    asserting identical trace shape, completion vocabulary, and redaction status.
 8. The proof point: run the harness-plural loop against popular OSS repos and turn
@@ -318,8 +347,14 @@ turns as a stop signal.
 - Protocol/version drift across four moving harnesses. Pin every binary/SDK and
   assert the init handshake; the registry refuses an actor whose declared
   capabilities do not satisfy the scenario.
-- Screenshot PII in the computer-use lane. Pixel frames never reach a public
-  surface unredacted; the default fails closed to a redacted thumbnail.
+- Screenshot PII in the computer-use lane. Redaction binds the PUBLISH
+  boundary, not capture (0.6.0): raw frames stay local in gitignored
+  `.mimetic/` and are never emitted by a publish command (this repo's CI
+  binary-asset scan additionally blocks them from commit);
+  `policies.redactScreenshots: true` blurs at capture for share-as-is
+  bundles. The earlier fail-closed redacted-thumbnail default was recanted —
+  see the capture-vs-publish rule in
+  [`docs/principles/invariants-and-defaults.md`](../principles/invariants-and-defaults.md).
 - Persona directives regressing into decoration. Friction tolerance and
   accessibility must demonstrably reach the actor input and change step pass/fail,
   enforced by the `persona-fidelity` check; a `gave_up` run must cite a concrete

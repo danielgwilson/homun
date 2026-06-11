@@ -11,14 +11,16 @@ context.
 Read these in order:
 
 1. [`AGENTS.md`](../../AGENTS.md) for public boundary and engineering rules.
-2. [`README.md`](../../README.md) for install, commands, and package shape.
-3. [`docs/goals/current.md`](../goals/current.md) for the active product goal.
-4. [`docs/product/open-source-install-experience.md`](../product/open-source-install-experience.md) for first-run UX.
-5. [`docs/roadmap/world-class-open-source-v0.md`](../roadmap/world-class-open-source-v0.md) for staged delivery history and remaining work.
-6. [`docs/architecture/observer.md`](../architecture/observer.md) for Observer architecture.
-7. [`docs/contracts/run-bundle.md`](../contracts/run-bundle.md) and [`docs/contracts/policy.md`](../contracts/policy.md) for proof contracts.
-8. [`docs/release/public-readiness-standard.md`](../release/public-readiness-standard.md) before deciding what must be scrubbed.
-9. [`docs/release/open-source-readiness.md`](../release/open-source-readiness.md) before touching public packaging or repository visibility.
+2. [`docs/principles/invariants-and-defaults.md`](../principles/invariants-and-defaults.md) — the constitution: which rules are invariants and which are overridable defaults.
+3. [`README.md`](../../README.md) for install, commands, and package shape.
+4. [`docs/goals/current.md`](../goals/current.md) for the active product goal.
+5. [`docs/goals/proof-roadmap/goal.md`](https://github.com/danielgwilson/mimetic-cli/blob/main/docs/goals/proof-roadmap/goal.md) for the ratified proof architecture (repo-only; not shipped in the npm package, hence the absolute link).
+6. [`docs/product/open-source-install-experience.md`](../product/open-source-install-experience.md) for first-run UX.
+7. [`docs/roadmap/world-class-open-source-v0.md`](../roadmap/world-class-open-source-v0.md) for staged delivery history (historical; see its status banner).
+8. [`docs/architecture/observer.md`](../architecture/observer.md) for Observer architecture.
+9. [`docs/contracts/run-bundle.md`](../contracts/run-bundle.md) and [`docs/contracts/policy.md`](../contracts/policy.md) for proof contracts.
+10. [`docs/release/public-readiness-standard.md`](../release/public-readiness-standard.md) before deciding what must be scrubbed.
+11. [`docs/release/open-source-readiness.md`](../release/open-source-readiness.md) before touching public packaging or repository visibility.
 
 ## Mental Model
 
@@ -58,7 +60,15 @@ Implemented:
 - public-safe feedback issue drafts without GitHub API mutation;
 - skills.sh-compatible agent skill;
 - first-class lab manifest resolution through `mimetic/labs/*.yaml` and
-  ignored `.mimetic/labs/*.yaml` overlays;
+  ignored `.mimetic/labs/*.yaml` overlays — `mimetic.lab.v2` compositions
+  (`src/lab-config.ts`), one engine, no hardcoded lab kinds;
+- a pluggable actor registry with four registered actors
+  (`src/actor-registry.ts`); on the computer-use routes `actors[0].type` is a
+  real dispatch key;
+- a computer-use route and clone subject provider: `subject.source: app-url`
+  drives a lab-owner loopback app in a hosted desktop, and `subject.source:
+  clone` + `serve` clones, installs, and serves a real app in-sandbox from
+  config before the actor drives it (`src/cua-actor-lab.ts`);
 - experimental maintainer OSS meta-lab and disposable OSS smoke harness;
 - OSS dogfood setup-quality filesystem artifacts rendered from the Observer Files
   tab with private-run previews suppressed by default.

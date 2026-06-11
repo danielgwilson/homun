@@ -2,7 +2,12 @@
 
 Date: 2026-06-02
 
-Status: public repository candidate after reviewed history cleanup. Actual
+Status: HISTORICAL (banner added 2026-06-11). This audit declared the repo a
+public repository candidate after reviewed history cleanup; the repository
+has since gone public and the package has shipped releases past the `0.1.3`
+named below, so treat versions and one-time audit details here as a snapshot. The release gates and publish procedure remain the working
+reference. For the live goal state read
+[`docs/goals/current.md`](../goals/current.md). Actual
 `npm publish` remains a human release action and must not be run by an agent
 without explicit approval in the current context.
 

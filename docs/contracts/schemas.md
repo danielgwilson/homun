@@ -1,8 +1,10 @@
 # Contract Schema Index
 
-Date: 2026-06-02
+Date: 2026-06-02 (updated 2026-06-11)
 
-Status: v0 draft schema map for agent-ready contract work.
+Status: schema map aligned to the shipped v0.6.x surface. Rows marked
+"reserved" name layering intent only — no code emits or validates them yet.
+Do not emit a reserved schema.
 
 ## Purpose
 
@@ -27,34 +29,57 @@ workflow without leaking private upstream truth into core.
 | --- | --- | --- |
 | Run bundle | `mimetic.run-bundle.v1` | `synthetic-run-bundle` |
 | Adapter | `mimetic.adapter.v1` | `synthetic-cli-adapter` |
-| Lab | `mimetic.lab.v1` | `first-run` |
+| Lab | `mimetic.lab.v2` | `first-run` |
 | Persona | `mimetic.persona.v1` | `synthetic-maintainer` |
 | Scenario | `mimetic.scenario.v1` | `first-run-smoke` |
-| Actor | `mimetic.actor.v1` | `synthetic-dry-run-actor` |
-| Substrate | `mimetic.substrate.v1` | `local-filesystem-substrate` |
-| Evidence stream | `mimetic.evidence-stream.v1` | `cli-stream-proof` |
+| Actor trace | `mimetic.actor-trace.v1` | `synthetic-actor-trace` |
+| Substrate | reserved (never shipped) | none |
+| Evidence stream | reserved (streams live inside the run bundle) | see [`run-bundle.md`](run-bundle.md) |
 | Review | `mimetic.review.v1` | `contract-proof-review` |
 | Verification | `mimetic.verify-result.v1` | `five-check-verify` |
-| Policy | `mimetic.policy.v1` | `public-safety-policy` |
+| Policy | `mimetic.policy.v1` (fixture-only; not engine-validated) | `public-safety-policy` |
 | Feedback | `mimetic.feedback.v1` | `public-safe-feedback` |
 
 ## Lab Manifest
 
-Lab manifests name reusable runs. They are human-authored `.yaml` source under
-`mimetic/labs/*.yaml` for committed public-safe labs, or ignored
-`.mimetic/labs/*.yaml` / `.mimetic/local/labs/*.yaml` for private local
-dogfood.
+Schema: `mimetic.lab.v2` (`src/lab-config.ts`). There is deliberately no v1
+compatibility: v1 (`kind`, top-level `sims`) had zero real users and was
+deleted when labs became config.
 
-Synthetic fixture:
+A lab is a composition over code primitives, not a hardcoded kind:
+
+- `subject`: what the run acts on — `this-repo`, `clone` (owner/repo slugs,
+  optional in-sandbox `serve` + env var names), or `app-url` (loopback unless
+  `policies.allowPublicTargets` declares an owned deployment);
+- `actors`: who drives it. On the computer-use routes `actors[0].type` is a
+  real dispatch key resolved against the actor registry; elsewhere it is a
+  descriptive label (e.g. `synthetic-persona`) and `count` sets the lane count;
+- `execution`: where it runs — `local` or `e2b-desktop`, plus desktop
+  device/resolution and timeouts;
+- `scenario`: `mode: dry-run` (contract evidence, no spend) or `live`;
+- `policies`: `redactRepos`, `redactScreenshots`, `allowPublicTargets`.
+
+Manifests are human-authored `.yaml` source under `mimetic/labs/*.yaml` for
+committed public-safe labs, or ignored `.mimetic/labs/*.yaml` /
+`.mimetic/local/labs/*.yaml` for private local dogfood. Fields the engine does
+not yet consume are accepted but reported as warnings (`mimetic lab inspect`
+shows them), so a manifest never silently claims behavior that did not run.
+
+Committed fixture (`mimetic/labs/first-run.yaml`):
 
 ```yaml
-schema: mimetic.lab.v1
+schema: mimetic.lab.v2
 id: first-run
-kind: synthetic
 title: First-run synthetic Observer
-sims: 4
+description: Public-safe starter lab that generates a synthetic run bundle and Observer without provider spend.
+subject:
+  source: this-repo
+actors:
+  - type: synthetic-persona
+    count: 4
+scenario:
+  mode: dry-run
 defaults:
-  dryRun: true
   open: true
 ```
 
@@ -222,178 +247,75 @@ scenario:
       expectation: Verification passes without private data.
 ```
 
-## Actor
+## Actor Trace
 
-Actors execute or simulate the trial. Core records actor status; adapters
-choose which actor fits the target and authority level.
+Actors execute or simulate the trial. Actor evidence is the provider-neutral
+`mimetic.actor-trace.v1` (`src/actor-contract.ts`): Codex app-server items,
+Claude Agent SDK blocks, pi events, and computer-use cycles all map onto one
+`ActorTrace`. Registered actors live in `src/actor-registry.ts`
+(`codex-app-server`, `pi-agent-core`, `claude-agent-sdk`,
+`openai-computer-use`). There is no `mimetic.actor.v1`; that name never
+shipped.
 
 Core-owned fields:
 
 - `schema`
-- `id`
-- `kind`
-- `status`
-- `startedAt`
-- `endedAt`
-- `durationMs`
-- `exitCode`
-- `reason`
-- redacted artifact pointers
+- `provider` / `providerVersion`
+- `protocol` (`json-rpc` | `json-stream` | `in-process-sdk` | `cua-loop`)
+- `lane` (`code` | `app` | `computer-use`)
+- `persona` (`id`, `traitsApplied`, `promptDigest`)
+- `redaction` (`status`, `screenshots: n/a|raw|blurred|ocr_scrubbed`, `notes`)
+- `startedAt` / `completedAt` / `durationMs`
+- `status` / `completionReason` / `reason`
+- `ids`, `counts`, `items[]`, optional `tokenUsage`, `capabilities`
 
 Adapter-owned fields:
 
-- actor prompt
-- target command
-- lane focus
+- the prompt, mission, persona text, and lane focus that produced the trace
 - product-specific acceptance notes
 
-Synthetic fixture:
+Synthetic fixture (abridged; see `src/actor-contract.ts` for the full type):
 
 ```yaml
-schema: mimetic.actor.v1
-id: synthetic-dry-run-actor
-kind: scripted
-status: passed
+schema: mimetic.actor-trace.v1
+provider: codex-app-server
+protocol: json-rpc
+lane: code
+persona:
+  id: synthetic-maintainer
+  traitsApplied: []
+  promptDigest: synthetic
+redaction:
+  status: passed
+  screenshots: n/a
+  notes: Synthetic fixture only.
 startedAt: "2026-06-02T10:00:00.000Z"
-endedAt: "2026-06-02T10:00:01.000Z"
+completedAt: "2026-06-02T10:00:01.000Z"
 durationMs: 1000
-exitCode: 0
+status: passed
+completionReason: turn_completed
 reason: Synthetic dry-run fixture completed.
-artifacts:
-  - path: actor.json
-    kind: trace
-    redaction: passed
+ids: {}
+counts: {}
+items: []
 ```
 
 ## Substrate
 
-Substrates are the execution environments that run actors or render evidence.
-
-Core-owned fields:
-
-- `schema`
-- `kind`
-- `status`
-- lifecycle state
-- safe capability names
-- cleanup result
-
-Adapter-owned fields:
-
-- target start command
-- allowed env var names
-- allowed hosts
-- viewport needs
-- repo-specific setup commands
-
-Synthetic fixture:
-
-```yaml
-schema: mimetic.substrate.v1
-id: local-filesystem-substrate
-kind: local-filesystem
-status: ready
-capabilities:
-  - read committed source
-  - write ignored run artifacts
-cleanup:
-  status: not_required
-credentials:
-  envNames: []
-  valuesPersisted: false
-```
+Reserved: `mimetic.substrate.v1` is named here for layering intent but has
+never shipped — no code emits or validates it. Substrate truth today lives
+inside run bundles (per-stream transport and status) and lab execution config
+(`execution.target: local | e2b-desktop`). Do not emit this schema.
 
 ## Evidence Streams
 
-Evidence streams normalize UI, browser, terminal, TUI, code-agent UI, artifact,
-and summary lanes for Observer and review.
-
-Core-owned fields:
-
-- `id`
-- `simId`
-- `kind`
-- `status`
-- `transport`
-- `updatedAt`
-- `completion`
-- `artifacts`
-- redacted terminal tail
-
-Adapter-owned fields:
-
-- stream label
-- route or command name
-- current step text
-- public-safe summaries
-- target-specific trace artifacts
-
-Synthetic fixture:
-
-```yaml
-schema: mimetic.evidence-stream.v1
-id: cli-stream-proof
-simId: sim-01
-kind: terminal
-label: CLI proof
-status: passed
-transport: snapshot
-updatedAt: "2026-06-02T10:00:01.000Z"
-terminal:
-  title: Synthetic terminal
-  format: plain
-  stdin: disabled
-  tail: "synthetic-cli verify passed"
-completion:
-  checkedAt: "2026-06-02T10:00:01.000Z"
-  exitCode: 0
-  reason: Synthetic command passed.
-  status: passed
-  meaningfulUse:
-    schema: mimetic.meaningful-use-score.v1
-    status: pass
-    score: 100
-    summary: Synthetic setup, actor, product surface, and feedback signals passed.
-    hardFailures: []
-    components:
-      - id: setup-correctness
-        label: Setup correctness
-        status: pass
-        score: 15
-        detail: All setup checks passed.
-      - id: filesystem-evidence
-        label: Filesystem evidence
-        status: pass
-        score: 10
-        detail: Mimetic source tree and setup-quality evidence were captured.
-      - id: nested-mimetic-evidence
-        label: Nested Mimetic evidence
-        status: pass
-        score: 20
-        detail: Nested Observer and verify proof were present.
-      - id: actor-activity
-        label: Actor activity
-        status: pass
-        score: 15
-        detail: Codex actor completed with redacted app-server evidence.
-      - id: product-surface
-        label: Product surface
-        status: pass
-        score: 15
-        detail: Target app was running and visually visible.
-      - id: feedback-quality
-        label: Feedback quality
-        status: pass
-        score: 25
-        detail: The lane produced app-specific user-study feedback.
-artifacts:
-  - label: review
-    path: review.md
-    kind: review
-```
-
-See [`run-bundle.md`](run-bundle.md#completion-and-meaningful-use-verdicts)
-for the full meaningful-use rubric and hard-failure rules.
+Reserved: `mimetic.evidence-stream.v1` has never shipped as a standalone
+schema, and streams are not standalone artifacts. They are the `streams` array
+inside `mimetic.run-bundle.v1`, normalizing UI, browser, terminal, TUI,
+code-agent UI, artifact, and summary lanes — each with transport, terminal
+tail, completion, meaningful-use verdicts, and artifact pointers. See
+[`run-bundle.md`](run-bundle.md#completion-and-meaningful-use-verdicts) for
+the stream shape, the meaningful-use rubric, and hard-failure rules.
 
 ## Review
 
@@ -463,6 +385,10 @@ checks:
 ## Policy
 
 Policy names boundaries before an actor runs or feedback is promoted.
+`mimetic.policy.v1` exists today only as an adapter fixture shape
+(`adapters/fixtures/`); the engine does not validate it. The committed policy
+source files scaffolded by `mimetic init` use `mimetic.redaction-policy.v1`,
+`mimetic.network-policy.v1`, and `mimetic.credentials-policy.v1`.
 
 Core-owned fields:
 
