@@ -1,0 +1,25 @@
+objective: "Multi-lane fan-out for the computer-use lab (#163): N differentiated persona lanes in one verified run bundle, per-lane-worlds default, bounded concurrency, proven deterministically at $0."
+active_task: "not started — execute goal.md"
+tasks:
+  - "config + routing: actors[0].lanes roster (persona/device/starting-surface) XOR count; execution.concurrency consumed; fail-closed cross-validation; routes to cua backend"
+  - "orchestration: extract a per-lane runner, bounded concurrency (mapWithConcurrency), per-lane provenance, pre-flight spend/lane plan event, per-lane teardown kill-by-id"
+  - "evidence: one N-stream run-bundle.v1, per-lane verify coverage, honest result projection; N=1 byte-stable golden"
+  - "deterministic proof: fake-substrate test (N sandboxes, bounded concurrency, per-lane cleanup, fail-fast, hollow-lane caught) + dry-run fixture + verify"
+  - "docs + fixture; open PR (do not merge)"
+receipts: []
+verification:
+  status: pending
+  last_command: null
+  last_artifact: null
+evidence:
+  environment_state: []
+  independent_checks: []
+  screenshots_or_traces: []
+  usage_receipts: []
+  missing:
+    - "deterministic fan-out test"
+    - "dry-run N-stream bundle + verifyRun ok"
+    - "N=1 golden byte-stable"
+    - "green required CI"
+completion_audit:
+  status: pending
