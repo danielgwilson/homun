@@ -937,8 +937,8 @@ function validSharedWorld(overrides?: { subject?: Record<string, unknown>; actor
         type: "openai-computer-use",
         mission: "Use the shared app.",
         lanes: [
-          { id: "role-author", persona: "author", entry: "/compose", instruction: "Create a note." },
-          { id: "role-reviewer", persona: "reviewer", entry: "/inbox", instruction: "Review the note." }
+          { id: "role-author", actorType: "author", surface: "studio", caseGroup: "case-001", persona: "author", entry: "/compose", instruction: "Create a note." },
+          { id: "role-reviewer", actorType: "reviewer", surface: "queue", caseGroup: "case-001", persona: "reviewer", entry: "/inbox", instruction: "Review the note." }
         ]
       }
     ],
@@ -958,7 +958,25 @@ describe("shared-world topology routing + cross-validation (#164)", () => {
     expect(result.warnings).toEqual([]);
     // The roster IS the role roster (no parallel roles[] field).
     expect(result.config.actors[0]?.lanes?.map((lane) => lane.id)).toEqual(["role-author", "role-reviewer"]);
+    expect(result.config.actors[0]?.lanes?.map((lane) => [lane.actorType, lane.surface, lane.caseGroup])).toEqual([
+      ["author", "studio", "case-001"],
+      ["reviewer", "queue", "case-001"]
+    ]);
     expect(result.config.subject.state?.checkpoint?.map((probe) => probe.name)).toEqual(["notes-count"]);
+  });
+
+  it("rejects malformed lane grouping metadata instead of persisting arbitrary labels", () => {
+    const result = parseLabConfig(validSharedWorld({
+      actors: [{
+        type: "openai-computer-use",
+        lanes: [
+          { id: "role-a", actorType: "person with spaces", entry: "/compose" },
+          { id: "role-b", actorType: "reviewer", entry: "/inbox" }
+        ]
+      }]
+    }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("actorType");
   });
 
   it("the SAME composition WITHOUT topology stays per-lane-worlds (cua), proving topology is the switch", () => {

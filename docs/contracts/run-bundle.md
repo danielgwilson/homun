@@ -84,6 +84,35 @@ generic adapter gap is appended. The bundle remains valid evidence for
 `mimetic verify` because the failure is an observed product-acceptance outcome,
 not corrupt evidence.
 
+## Lane Grouping Metadata
+
+Multi-lane browser/shared-world routes may carry optional lane grouping metadata:
+
+```yaml
+actors:
+  - type: openai-computer-use
+    lanes:
+      - id: lane-01
+        actorType: viewer
+        surface: intake
+        caseGroup: case-001
+```
+
+These fields are adapter-owned labels, not core enums. They let downstream
+projects express "N actors of M app-defined types across S surfaces" without
+teaching Mimetic private product nouns. Values must be public-safe tokens and
+are projected into:
+
+- the preflight lane plan;
+- shared-world `laneWindows[]` and `outcomes[]`;
+- Observer `laneGroups[]`;
+- human-readable Observer stream labels.
+
+`actorType` is deliberately separate from `actors[0].type`. The latter selects
+the Mimetic execution actor, such as `openai-computer-use` or `scripted-browser`.
+The former is the app-defined simulated user bucket, such as `viewer`,
+`maintainer`, or a downstream adapter's own role label.
+
 ## Completion And Meaningful-Use Verdicts
 
 Each live stream may include `completion` when the harness has enough evidence

@@ -185,6 +185,9 @@ export interface RunCuaActorLabOptions {
  *  text never leaks — only a sha256-16 digest of the composed instructions. */
 export interface CuaLanePlanEntry {
   id: string;
+  actorType?: string;
+  surface?: string;
+  caseGroup?: string;
   /** 1-based display index. */
   index: number;
   persona: string;
@@ -215,6 +218,9 @@ export interface CuaLanePlan {
  *  N=1). A `blocked` lane is one the pipeline-gate / fail-fast skipped before it ran. */
 export interface CuaLaneResult {
   id: string;
+  actorType?: string;
+  surface?: string;
+  caseGroup?: string;
   index: number;
   persona: string;
   device: string;
@@ -329,6 +335,9 @@ const DEFAULT_MISSION =
  *  renders at. Internal — the public projection is CuaLanePlanEntry / CuaLaneResult. */
 export interface CuaLaneSpec {
   laneId: string;
+  actorType?: string;
+  surface?: string;
+  caseGroup?: string;
   /** 0-based. */
   laneIndex: number;
   simId: string;
@@ -458,6 +467,9 @@ function laneSpecsAndPlan(
     });
     lanes.push({
       laneId,
+      ...(lane?.actorType === undefined ? {} : { actorType: lane.actorType }),
+      ...(lane?.surface === undefined ? {} : { surface: lane.surface }),
+      ...(lane?.caseGroup === undefined ? {} : { caseGroup: lane.caseGroup }),
       laneIndex: i,
       simId,
       streamId,
@@ -484,6 +496,9 @@ function laneSpecsAndPlan(
     dryRun: opts.dryRun === true,
     lanes: lanes.map((spec) => ({
       id: spec.laneId,
+      ...(spec.actorType === undefined ? {} : { actorType: spec.actorType }),
+      ...(spec.surface === undefined ? {} : { surface: spec.surface }),
+      ...(spec.caseGroup === undefined ? {} : { caseGroup: spec.caseGroup }),
       index: spec.laneIndex + 1,
       persona: spec.persona.id,
       device: spec.deviceName,
@@ -518,11 +533,18 @@ function emitPreflightPlan(plan: CuaLanePlan, labId: string): void {
     `  per-lane session budget ${Math.round(plan.perLaneSessionBudgetMs / 1000)}s; worst-case ~${plan.worstCaseSandboxMinutes} sandbox-minutes total${plan.dryRun ? " (dry-run: $0)" : ""}.`
   );
   for (const lane of plan.lanes) {
-    lines.push(
-      `  - ${lane.id}: persona=${lane.persona} device=${lane.device} ${lane.resolution[0]}x${lane.resolution[1]} prompt#${lane.instructionDigest}`
-    );
+    lines.push(`  - ${formatLanePlanEntry(lane)}`);
   }
   process.stderr.write(`${lines.join("\n")}\n`);
+}
+
+function formatLanePlanEntry(lane: CuaLanePlanEntry): string {
+  const taxonomy = [
+    lane.actorType ? `type=${lane.actorType}` : undefined,
+    lane.surface ? `surface=${lane.surface}` : undefined,
+    lane.caseGroup ? `case=${lane.caseGroup}` : undefined
+  ].filter((part): part is string => part !== undefined);
+  return `${lane.id}: persona=${lane.persona}${taxonomy.length > 0 ? ` ${taxonomy.join(" ")}` : ""} device=${lane.device} ${lane.resolution[0]}x${lane.resolution[1]} prompt#${lane.instructionDigest}`;
 }
 
 /** Shared deps every lane runner needs (resolved once in the engine). */
@@ -938,6 +960,9 @@ async function runCuaLanes(
 function toLaneResult(spec: CuaLaneSpec, outcome: LaneRunOutcome | undefined, subject: CuaSubjectProjection, dryRun: boolean): CuaLaneResult {
   const base = {
     id: spec.laneId,
+    ...(spec.actorType === undefined ? {} : { actorType: spec.actorType }),
+    ...(spec.surface === undefined ? {} : { surface: spec.surface }),
+    ...(spec.caseGroup === undefined ? {} : { caseGroup: spec.caseGroup }),
     index: spec.laneIndex + 1,
     persona: spec.persona.id,
     device: spec.deviceName,
@@ -2075,7 +2100,7 @@ export function buildCuaFanoutBundle(args: {
     at: args.createdAt,
     level: "info",
     type: "cua-lab.fanout.plan",
-    message: `Fan-out plan: ${args.plan.laneCount} lane(s) (${args.plan.strategy}), concurrency ${args.plan.concurrency}, ${args.plan.waves} wave(s); per-lane session budget ${Math.round(args.plan.perLaneSessionBudgetMs / 1000)}s; worst-case ~${args.plan.worstCaseSandboxMinutes} sandbox-minutes${args.dryRun ? " (dry-run: $0)" : ""}. Lanes: ${args.plan.lanes.map((lane) => `${lane.id}[${lane.persona}/${lane.device} ${lane.resolution[0]}x${lane.resolution[1]}]`).join(", ")}.`
+    message: `Fan-out plan: ${args.plan.laneCount} lane(s) (${args.plan.strategy}), concurrency ${args.plan.concurrency}, ${args.plan.waves} wave(s); per-lane session budget ${Math.round(args.plan.perLaneSessionBudgetMs / 1000)}s; worst-case ~${args.plan.worstCaseSandboxMinutes} sandbox-minutes${args.dryRun ? " (dry-run: $0)" : ""}. Lanes: ${args.plan.lanes.map(formatLanePlanEntry).join(", ")}.`
   });
 
   let eventSeq = 2;

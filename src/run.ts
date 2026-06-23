@@ -433,6 +433,9 @@ export interface SharedWorldPlane {
  */
 export interface SharedWorldLaneWindow {
   roleId: string;
+  actorType?: string;
+  surface?: string;
+  caseGroup?: string;
   /** Resolves to a real RunSimulation in this bundle. */
   simId: string;
   /** Resolves to a real RunStream (the actor's trace) in this bundle. */
@@ -464,6 +467,9 @@ export interface SharedWorldStateSnapshot {
 /** CONCURRENT shape: one persona's OUTCOME against the contended world (the "M of N" headline). */
 export interface SharedWorldOutcome {
   roleId: string;
+  actorType?: string;
+  surface?: string;
+  caseGroup?: string;
   simId: string;
   streamId: string;
   /** Terminal session status. */
@@ -5052,6 +5058,9 @@ function isSharedWorldTimelineEntry(value: unknown): boolean {
 function isSharedWorldLaneWindow(value: unknown): boolean {
   return isRecord(value)
     && typeof value.roleId === "string"
+    && (value.actorType === undefined || typeof value.actorType === "string")
+    && (value.surface === undefined || typeof value.surface === "string")
+    && (value.caseGroup === undefined || typeof value.caseGroup === "string")
     && typeof value.simId === "string"
     && typeof value.streamId === "string"
     && typeof value.startedAt === "number"
@@ -5069,6 +5078,9 @@ function isSharedWorldStateSnapshot(value: unknown): boolean {
 function isSharedWorldOutcome(value: unknown): boolean {
   return isRecord(value)
     && typeof value.roleId === "string"
+    && (value.actorType === undefined || typeof value.actorType === "string")
+    && (value.surface === undefined || typeof value.surface === "string")
+    && (value.caseGroup === undefined || typeof value.caseGroup === "string")
     && typeof value.simId === "string"
     && typeof value.streamId === "string"
     && typeof value.status === "string"
