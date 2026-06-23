@@ -180,6 +180,9 @@ function makeRunSession(
 function concurrentConfig(roleCount = 3, concurrency = 3, template?: string): LabConfig {
   const lanes = Array.from({ length: roleCount }, (_unused, i) => ({
     id: `persona-${String(i + 1).padStart(2, "0")}`,
+    actorType: i === 0 ? "initiator" : "collaborator",
+    surface: i === 0 ? "intake" : "review",
+    caseGroup: "case-001",
     persona: `persona-${i + 1}`,
     entry: `/seat-${i + 1}`
   }));
@@ -349,8 +352,13 @@ describe("runConcurrentSharedWorld (the heart: real orchestration + rendezvous l
     expect(bundle.sharedWorld.plane.exposure).toBe("synthetic");
 
     // PROVEN CONCURRENCY (FIX-1): the laneWindows the REAL clock measured overlap (≥2 in flight).
-    const windows = bundle.sharedWorld.laneWindows as Array<{ startedAt: number; endedAt: number; routeHostDigest: string }>;
+    const windows = bundle.sharedWorld.laneWindows as Array<{ startedAt: number; endedAt: number; routeHostDigest: string; actorType?: string; surface?: string; caseGroup?: string }>;
     expect(windows).toHaveLength(3);
+    expect(windows.map((w) => [w.actorType, w.surface, w.caseGroup])).toEqual([
+      ["initiator", "intake", "case-001"],
+      ["collaborator", "review", "case-001"],
+      ["collaborator", "review", "case-001"]
+    ]);
     const overlapping = windows.some((a, i) => windows.some((b, j) => i !== j && a.startedAt < b.endedAt && b.startedAt < a.endedAt));
     expect(overlapping).toBe(true);
     expect(result.overlapProven).toBe(true);
@@ -366,12 +374,25 @@ describe("runConcurrentSharedWorld (the heart: real orchestration + rendezvous l
 
     // Per-persona outcomes recorded (the "M of N" headline).
     expect(bundle.sharedWorld.outcomes).toHaveLength(3);
+    expect((bundle.sharedWorld.outcomes as Array<{ actorType?: string; surface?: string; caseGroup?: string }>).map((o) => [o.actorType, o.surface, o.caseGroup])).toEqual([
+      ["initiator", "intake", "case-001"],
+      ["collaborator", "review", "case-001"],
+      ["collaborator", "review", "case-001"]
+    ]);
     expect((bundle.sharedWorld.outcomes as Array<{ ok: boolean }>).every((o) => o.ok)).toBe(true);
 
     // verifyRun ok on the GOOD concurrent bundle (incl. the concurrency-on-pass gate).
     const verify = await verifyRun(cwd, result.runId);
     expect(verify.ok).toBe(true);
     expect(verify.checks.find((c) => c.name === "shared-world evidence")?.ok).toBe(true);
+
+    const observerData = JSON.parse(await readFile(path.join(cwd, ".mimetic", "runs", result.runId, "observer", "observer-data.json"), "utf8"));
+    expect(observerData.laneGroups).toEqual([
+      expect.objectContaining({ roleId: "persona-01", actorType: "initiator", surface: "intake", caseGroup: "case-001", status: "passed" }),
+      expect.objectContaining({ roleId: "persona-02", actorType: "collaborator", surface: "review", caseGroup: "case-001", status: "passed" }),
+      expect.objectContaining({ roleId: "persona-03", actorType: "collaborator", surface: "review", caseGroup: "case-001", status: "passed" })
+    ]);
+    expect(observerData.streams.map((stream: { label: string }) => stream.label).join("\n")).toContain("type:initiator / surface:intake / case:case-001");
 
     // Per-actor traces written.
     const actorsDir = await readdir(path.join(cwd, ".mimetic", "runs", result.runId, "actors"));

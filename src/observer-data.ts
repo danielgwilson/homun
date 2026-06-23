@@ -33,6 +33,7 @@ export interface ObserverData {
     blocked: number;
     warnings: number;
   };
+  laneGroups: ObserverLaneGroup[];
   streams: ObserverStream[];
   events: RunEvent[];
   artifactLinks: ObserverArtifactLink[];
@@ -52,6 +53,16 @@ export interface ObserverStream extends RunStream {
   statusLabel: string;
   terminalPlain: string;
   timeline: RunEvent[];
+}
+
+export interface ObserverLaneGroup {
+  roleId: string;
+  simId: string;
+  streamId: string;
+  status: string;
+  actorType?: string;
+  surface?: string;
+  caseGroup?: string;
 }
 
 const allKinds: RunStreamKind[] = ["ui", "browser", "terminal", "tui", "codex-ui", "artifact", "summary"];
@@ -102,6 +113,7 @@ export function buildObserverData(bundle: RunBundle, generatedAt = new Date().to
       blocked,
       warnings
     },
+    laneGroups: buildLaneGroups(bundle),
     streams,
     events,
     artifactLinks: [
@@ -120,6 +132,21 @@ export function buildObserverData(bundle: RunBundle, generatedAt = new Date().to
       artifactRoot: bundle.artifactRoot
     }
   };
+}
+
+function buildLaneGroups(bundle: RunBundle): ObserverLaneGroup[] {
+  const outcomes = new Map(
+    (bundle.sharedWorld?.outcomes ?? []).map((outcome) => [outcome.roleId, outcome.status])
+  );
+  return (bundle.sharedWorld?.laneWindows ?? []).map((lane) => ({
+    roleId: lane.roleId,
+    simId: lane.simId,
+    streamId: lane.streamId,
+    status: outcomes.get(lane.roleId) ?? lane.verdict,
+    ...(lane.actorType === undefined ? {} : { actorType: lane.actorType }),
+    ...(lane.surface === undefined ? {} : { surface: lane.surface }),
+    ...(lane.caseGroup === undefined ? {} : { caseGroup: lane.caseGroup })
+  }));
 }
 
 export function stripAnsi(value: string): string {

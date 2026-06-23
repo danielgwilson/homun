@@ -263,6 +263,16 @@ export interface LabActorLaneFocus {
 export interface LabActorLane {
   /** Public-safe lane label (interpolates into per-lane evidence paths). Default lane-NN. */
   id?: string;
+  /**
+   * App-defined actor type label for grouping simulated users ("operator", "viewer",
+   * "maintainer", etc.). This is NOT the execution actor dispatch key (`actors[0].type`);
+   * it is adapter-owned taxonomy for roster/readback.
+   */
+  actorType?: string;
+  /** App-defined surface label for grouping lanes that start from different product areas. */
+  surface?: string;
+  /** App-defined correlation id tying lanes to one shared case/account/work item. */
+  caseGroup?: string;
   /** Persona id/label threaded into this lane's actor prompt. Default: actors[0].persona. */
   persona?: string;
   /** Named device preset this lane renders at. XOR raw execution.desktop.resolution. */
@@ -750,6 +760,7 @@ const ENV_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 // it must be a public-safe path token, same shape as a lab id.
 const LANE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 const LANE_ID_MAX_CHARS = 40;
+const LANE_METADATA_MAX_CHARS = 80;
 // Hard cap on fan-out lanes (per the ratified design). No MIMETIC_MAX_LANES escape above this
 // until a reference panel demands it — N concurrent paid desktops is real money.
 export const MAX_CUA_LANES = 16;
@@ -1527,8 +1538,9 @@ function parseLaneFocus(raw: unknown): LabActorLaneFocus | undefined {
 
 /**
  * Parse `actors[index].lanes` into a fan-out roster (computer-use E2B route). Structural only:
- * each lane is `{ id?, persona?, device?, instruction? }`. Lane ids (when declared) must be
- * public-safe path tokens and unique; a lane device must be a known preset name. The
+ * each lane is `{ id?, actorType?, surface?, caseGroup?, persona?, device?, instruction? }`.
+ * Lane ids (when declared) must be public-safe path tokens and unique; lane grouping metadata
+ * must be public-safe tokens; a lane device must be a known preset name. The
  * route-scoped cross-validation (lanes XOR count/laneFocus, device XOR raw resolution, cap 16)
  * runs in parseLabConfig where the route is known.
  */
@@ -1537,13 +1549,13 @@ function parseLanes(raw: unknown, actorIndex: number): { ok: true; value: LabAct
     return { ok: true, value: undefined };
   }
   if (!Array.isArray(raw) || raw.length === 0) {
-    return invalid(`actors[${actorIndex}].lanes must be a non-empty array of lane objects ({ id?, persona?, device?, instruction? }) when set.`);
+    return invalid(`actors[${actorIndex}].lanes must be a non-empty array of lane objects ({ id?, actorType?, surface?, caseGroup?, persona?, device?, instruction? }) when set.`);
   }
   const lanes: LabActorLane[] = [];
   const seenIds = new Set<string>();
   for (const [laneIndex, entry] of raw.entries()) {
     if (!isRecord(entry)) {
-      return invalid(`actors[${actorIndex}].lanes[${laneIndex}] must be an object ({ id?, persona?, device?, instruction? }).`);
+      return invalid(`actors[${actorIndex}].lanes[${laneIndex}] must be an object ({ id?, actorType?, surface?, caseGroup?, persona?, device?, instruction? }).`);
     }
     const lane: LabActorLane = {};
     const id = str(entry.id);
@@ -1566,6 +1578,15 @@ function parseLanes(raw: unknown, actorIndex: number): { ok: true; value: LabAct
     }
     const persona = str(entry.persona);
     if (persona !== undefined) lane.persona = persona;
+    const actorType = parseLaneMetadata(entry.actorType, `actors[${actorIndex}].lanes[${laneIndex}].actorType`);
+    if (!actorType.ok) return actorType;
+    if (actorType.value !== undefined) lane.actorType = actorType.value;
+    const surface = parseLaneMetadata(entry.surface, `actors[${actorIndex}].lanes[${laneIndex}].surface`);
+    if (!surface.ok) return surface;
+    if (surface.value !== undefined) lane.surface = surface.value;
+    const caseGroup = parseLaneMetadata(entry.caseGroup, `actors[${actorIndex}].lanes[${laneIndex}].caseGroup`);
+    if (!caseGroup.ok) return caseGroup;
+    if (caseGroup.value !== undefined) lane.caseGroup = caseGroup.value;
     const instruction = str(entry.instruction);
     if (instruction !== undefined) lane.instruction = instruction;
     // `entry` is shape-captured here; the same-origin-with-serve.url check needs serve context, so
@@ -1575,6 +1596,17 @@ function parseLanes(raw: unknown, actorIndex: number): { ok: true; value: LabAct
     lanes.push(lane);
   }
   return { ok: true, value: lanes };
+}
+
+function parseLaneMetadata(raw: unknown, field: string): { ok: true; value: string | undefined } | LabConfigParseFailure {
+  const value = str(raw);
+  if (value === undefined) {
+    return { ok: true, value: undefined };
+  }
+  if (!LANE_ID_PATTERN.test(value) || value.length > LANE_METADATA_MAX_CHARS) {
+    return invalid(`${field} must be a public-safe token matching ${LANE_ID_PATTERN} and at most ${LANE_METADATA_MAX_CHARS} chars; got "${value}".`);
+  }
+  return { ok: true, value };
 }
 
 function parseExecution(raw: unknown): { ok: true; value: LabExecution | undefined } | LabConfigParseFailure {

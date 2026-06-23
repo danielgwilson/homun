@@ -250,6 +250,15 @@ function publicSafeRouteLabel(entry: string | undefined): string {
   return `[provisioned-subject]${entry ?? "/"}`;
 }
 
+function laneTaxonomyLabel(spec: Pick<CuaLaneSpec, "actorType" | "surface" | "caseGroup">): string {
+  const parts = [
+    spec.actorType ? `type:${spec.actorType}` : undefined,
+    spec.surface ? `surface:${spec.surface}` : undefined,
+    spec.caseGroup ? `case:${spec.caseGroup}` : undefined
+  ].filter((part): part is string => part !== undefined);
+  return parts.length > 0 ? ` (${parts.join(" / ")})` : "";
+}
+
 /** Build one actor lane's CuaLaneSpec from a roster role (per-actor device IS honored here — each
  *  actor has its OWN desktop, unlike the sequential one-sandbox PoC). */
 function buildActorSpec(config: LabConfig, role: LabActorLane, index: number): CuaLaneSpec {
@@ -265,6 +274,9 @@ function buildActorSpec(config: LabConfig, role: LabActorLane, index: number): C
   const streamId = `stream-${String(index + 1).padStart(3, "0")}`;
   return {
     laneId: roleId,
+    ...(role.actorType === undefined ? {} : { actorType: role.actorType }),
+    ...(role.surface === undefined ? {} : { surface: role.surface }),
+    ...(role.caseGroup === undefined ? {} : { caseGroup: role.caseGroup }),
     laneIndex: index,
     simId: `sim-${String(index + 1).padStart(3, "0")}`,
     streamId,
@@ -767,6 +779,7 @@ export function buildConcurrentSharedWorldBundle(args: {
   const nextEventId = (suffix: string): string => `event-${String(eventSeq++).padStart(3, "0")}-${suffix}`;
 
   actorSpecs.forEach((spec, index) => {
+    const taxonomy = laneTaxonomyLabel(spec);
     const result = actorResults[index];
     const outcome = result?.outcome;
     const session = outcome?.session;
@@ -798,10 +811,10 @@ export function buildConcurrentSharedWorldBundle(args: {
       progress: session || outcome?.sessionError ? 1 : 0.25,
       currentStep: reason,
       summary: session
-        ? `Persona ${spec.laneId} (${spec.persona.id}): drove the shared plane concurrently; ${session.completionReason}.`
+        ? `Persona ${spec.laneId}${taxonomy} (${spec.persona.id}): drove the shared plane concurrently; ${session.completionReason}.`
         : outcome?.sessionError
-          ? `Persona ${spec.laneId} failed before a terminal session verdict: ${outcome.sessionError}`
-          : `Contract persona ${spec.laneId} (${spec.persona.id}) for ${descriptor.id} against the shared plane at ${appUrl}.`,
+          ? `Persona ${spec.laneId}${taxonomy} failed before a terminal session verdict: ${outcome.sessionError}`
+          : `Contract persona ${spec.laneId}${taxonomy} (${spec.persona.id}) for ${descriptor.id} against the shared plane at ${appUrl}.`,
       streamIds: [spec.streamId],
       startedAt: createdAt,
       updatedAt: createdAt
@@ -811,7 +824,7 @@ export function buildConcurrentSharedWorldBundle(args: {
       id: spec.streamId,
       simId: spec.simId,
       kind: "browser",
-      label: `Concurrent persona ${spec.laneId} — ${config.id}`,
+      label: `Concurrent persona ${spec.laneId}${taxonomy} — ${config.id}`,
       status,
       transport: "snapshot",
       updatedAt: createdAt,
@@ -826,7 +839,7 @@ export function buildConcurrentSharedWorldBundle(args: {
       },
       ui: {
         route,
-        intent: `Watch persona ${spec.laneId} (${spec.persona.id}) drive the SHARED plane concurrently with the other personas.`,
+        intent: `Watch persona ${spec.laneId}${taxonomy} (${spec.persona.id}) drive the SHARED plane concurrently with the other personas.`,
         state: reason,
         ...(session ? { actorStatus: session.status } : {}),
         ...(lastScreenshot ? { screenshotUrl: lastScreenshot } : {})
@@ -889,6 +902,9 @@ export function buildConcurrentSharedWorldBundle(args: {
     const routeHostDigest = result ? hostOriginDigest(result.route) : fallbackHostDigest;
     return {
       roleId: spec.laneId,
+      ...(spec.actorType === undefined ? {} : { actorType: spec.actorType }),
+      ...(spec.surface === undefined ? {} : { surface: spec.surface }),
+      ...(spec.caseGroup === undefined ? {} : { caseGroup: spec.caseGroup }),
       simId: spec.simId,
       streamId: spec.streamId,
       startedAt: result?.startedAt ?? 0,
@@ -910,6 +926,9 @@ export function buildConcurrentSharedWorldBundle(args: {
     const ok = !dryRun && actorLanePassed(result);
     return {
       roleId: spec.laneId,
+      ...(spec.actorType === undefined ? {} : { actorType: spec.actorType }),
+      ...(spec.surface === undefined ? {} : { surface: spec.surface }),
+      ...(spec.caseGroup === undefined ? {} : { caseGroup: spec.caseGroup }),
       simId: spec.simId,
       streamId: spec.streamId,
       status: session ? session.status : result?.outcome.sessionError ? "failed" : "contract_proof_only",
