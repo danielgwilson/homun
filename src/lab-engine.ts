@@ -258,6 +258,7 @@ export async function runLab(config: LabConfig, options: RunLabOptions): Promise
         config,
         dryRun,
         ...(options.open === undefined ? {} : { open: options.open }),
+        ...(options.onObserverReady === undefined ? {} : { onObserverReady: options.onObserverReady }),
         ...(options.runId === undefined ? {} : { runId: options.runId }),
         ...(options.sharedWorldHooks === undefined ? {} : { hooks: options.sharedWorldHooks })
       });
