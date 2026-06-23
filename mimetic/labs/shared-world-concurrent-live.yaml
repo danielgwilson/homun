@@ -54,14 +54,23 @@ actors:
     # per-persona device is physically honored here.
     lanes:
       - id: persona-planner
+        actorType: planner
+        surface: task-board
+        caseGroup: board-001
         persona: weekly-planner
         device: desktop
         instruction: Add one task describing planning the week, then stop.
       - id: persona-coordinator
+        actorType: coordinator
+        surface: task-board
+        caseGroup: board-001
         persona: ops-coordinator
         device: desktop
         instruction: Add one task describing coordinating an operations handoff, then stop.
       - id: persona-mobile
+        actorType: contributor
+        surface: task-board
+        caseGroup: board-001
         persona: on-the-go-contributor
         device: mobile
         instruction: From a phone, add one quick task describing a follow-up, then stop.

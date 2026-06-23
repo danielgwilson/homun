@@ -606,6 +606,11 @@ describe("committed live-fixture lab (deterministic $0 wiring proof)", () => {
     expect((config.subject.state?.seed ?? []).length).toBeGreaterThan(0);
     expect((config.subject.state?.checkpoint ?? []).length).toBeGreaterThan(0);
     expect(config.actors[0]?.lanes).toHaveLength(3);
+    expect(config.actors[0]?.lanes?.map((lane) => [lane.actorType, lane.surface, lane.caseGroup])).toEqual([
+      ["planner", "task-board", "board-001"],
+      ["coordinator", "task-board", "board-001"],
+      ["contributor", "task-board", "board-001"]
+    ]);
     expect(config.execution?.concurrency).toBe(3);
   });
 
@@ -617,6 +622,17 @@ describe("committed live-fixture lab (deterministic $0 wiring proof)", () => {
     const bundle = JSON.parse(await readFile(path.join(cwd, ".mimetic", "runs", outcome.result.runId, "run.json"), "utf8"));
     expect(bundle.attributionClass).toBe("shared-world");
     expect(bundle.sharedWorld.topologyMode).toBe("concurrent");
+    expect(bundle.sharedWorld.laneWindows.map((lane: { actorType?: string; surface?: string; caseGroup?: string }) => [lane.actorType, lane.surface, lane.caseGroup])).toEqual([
+      ["planner", "task-board", "board-001"],
+      ["coordinator", "task-board", "board-001"],
+      ["contributor", "task-board", "board-001"]
+    ]);
+    const observerData = JSON.parse(await readFile(path.join(cwd, ".mimetic", "runs", outcome.result.runId, "observer", "observer-data.json"), "utf8"));
+    expect(observerData.laneGroups.map((lane: { actorType?: string; surface?: string; caseGroup?: string }) => [lane.actorType, lane.surface, lane.caseGroup])).toEqual([
+      ["planner", "task-board", "board-001"],
+      ["coordinator", "task-board", "board-001"],
+      ["contributor", "task-board", "board-001"]
+    ]);
     const verify = await verifyRun(cwd, outcome.result.runId);
     expect(verify.ok).toBe(true);
     expect(verify.checks.find((c) => c.name === "shared-world evidence")?.ok).toBe(true);
