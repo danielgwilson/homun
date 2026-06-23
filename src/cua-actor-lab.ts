@@ -143,6 +143,17 @@ export interface CuaActorLabHooks extends BrowserLabAdapterHooks {
    * scraping stderr. Identical plan in dry-run, marked $0.
    */
   onPreflight?: (plan: CuaLanePlan) => void;
+  /**
+   * Runtime-only live desktop stream callback. The URL carries an auth key and must never be
+   * persisted into run artifacts; callers use it to hydrate an attached Observer server.
+   */
+  onRuntimeStreamReady?: (stream: {
+    laneId: string;
+    sandboxId: string;
+    simId: string;
+    streamId: string;
+    url: string;
+  }) => Promise<void> | void;
   loadDesktopModule?: () => Promise<E2BDesktopModule>;
   runSession?: (options: CuaActorSessionOptions) => Promise<CuaLoopResult>;
   /**
@@ -764,6 +775,13 @@ export async function runCuaLane(spec: CuaLaneSpec, deps: CuaLaneDeps): Promise<
           autoConnect: true,
           viewOnly: true,
           resize: "scale"
+        });
+        await deps.hooks.onRuntimeStreamReady?.({
+          laneId: spec.laneId,
+          sandboxId: desktop.sandboxId,
+          simId: spec.simId,
+          streamId: spec.streamId,
+          url: streamUrl
         });
       } catch (error) {
         warnings.push(`Live desktop stream unavailable (run continues; evidence still captured): ${redactText(deps.scrubKnownValues(compactError(error)))}`);

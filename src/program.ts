@@ -1731,26 +1731,92 @@ async function runConcurrentSharedWorldBackend(args: {
   options: LabCommandOptions;
 }): Promise<void> {
   const wantsMachine = wantsJson(args.command);
+  const dryRun = resolveLabDryRun(args.config, args.options.dryRun, true) ?? true;
   const shouldOpen = args.options.open === false
     ? false
     : wantsMachine
       ? args.options.open === true
       : args.options.open ?? args.config.defaults?.open ?? args.mode === "watch";
+  const wantsFollow = args.mode === "watch" && !wantsMachine && args.options.detach !== true && dryRun !== true;
+  const port = parseObserverPort(args.options.port ?? "0");
+  if (wantsFollow && port === null) {
+    const result: ConcurrentSharedWorldLabResult = {
+      schema: "mimetic.concurrent-shared-world-lab-result.v1",
+      ok: false,
+      cwd: args.options.cwd,
+      labId: args.config.id,
+      actor: args.config.actors[0]?.type ?? "",
+      topology: "shared-world",
+      topologyMode: "concurrent",
+      roleCount: args.config.actors[0]?.lanes?.length ?? 0,
+      concurrency: args.config.execution?.concurrency ?? 1,
+      dryRun,
+      runId: args.options.runId ?? "not-created",
+      roles: [],
+      warnings: [],
+      error: {
+        code: "MIMETIC_CONCURRENT_SHARED_WORLD_LAB_FAILED",
+        message: "--port must be an integer between 0 and 65535."
+      }
+    };
+    writeResult(args.command, args.io, result, formatConcurrentSharedWorldLabHuman);
+    args.io.setExitCode(2);
+    return;
+  }
 
-  const outcome = await runLab(args.config, {
-    cwd: args.options.cwd,
-    open: args.mode === "watch" ? false : shouldOpen,
-    ...(args.options.dryRun === undefined ? {} : { dryRun: args.options.dryRun }),
-    ...(args.options.runId === undefined ? {} : { runId: args.options.runId })
-  });
+  let server: ObserverServer | null = null;
+  let attachedObserver: (ObserverResult & { ok: true }) | null = null;
+  let outcome: Awaited<ReturnType<typeof runLab>>;
+  try {
+    outcome = await runLab(args.config, {
+      cwd: args.options.cwd,
+      open: wantsFollow ? false : shouldOpen,
+      dryRun,
+      ...(wantsFollow
+        ? {
+            onObserverReady: async (observer) => {
+              attachedObserver = observer;
+              if (!server) {
+                server = await serveObserver(observer, { open: shouldOpen, port: port ?? 0 });
+              }
+            }
+          }
+        : {}),
+      ...(args.options.runId === undefined ? {} : { runId: args.options.runId })
+    });
+  } catch (error) {
+    const earlyServer = server as ObserverServer | null;
+    await earlyServer?.close().catch((cleanupError: unknown) => {
+      args.io.writeErr(`watch cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}\n`);
+    });
+    server = null;
+    throw error;
+  }
   if (outcome.backend !== "concurrent-shared-world") {
     throw new Error(`Expected concurrent-shared-world backend, got ${outcome.backend}.`);
   }
   const result = outcome.result;
-  writeResult(args.command, args.io, result, formatConcurrentSharedWorldLabHuman);
+  let output: ConcurrentSharedWorldLabResult = result;
+  if (server && attachedObserver) {
+    const activeServer = server as ObserverServer;
+    output = {
+      ...result,
+      observer: result.observer?.ok
+        ? withObserverServer(result.observer, activeServer)
+        : withObserverServer(attachedObserver, activeServer),
+      warnings: [
+        ...result.warnings,
+        "Live concurrent shared-world server is polling observer-data.json with no-store caching.",
+        ...(activeServer.warning ? [activeServer.warning] : [])
+      ]
+    };
+  }
+  writeResult(args.command, args.io, output, formatConcurrentSharedWorldLabHuman);
   args.io.setExitCode(result.ok ? 0 : 2);
 
-  if (args.mode === "watch" && result.ok && !wantsMachine) {
+  if (server && output.observer?.ok) {
+    await followObserver(args.io, output.observer, server);
+  } else if (args.mode === "watch" && result.ok && !wantsMachine) {
     await renderAndMaybeFollowObserver({
       command: args.command,
       cwd: args.options.cwd,

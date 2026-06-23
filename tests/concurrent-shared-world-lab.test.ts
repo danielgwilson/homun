@@ -16,6 +16,7 @@ import { runConcurrentSharedWorld } from "../src/concurrent-shared-world-lab.js"
 import type { SharedWorldLabHooks } from "../src/shared-world-lab.js";
 import type { BrowserLabScoringContext, RunAdapterScore, RunBundle } from "../src/index.js";
 import { verifyRun } from "../src/run.js";
+import { serveObserver, type ObserverResult, type ObserverServer } from "../src/observer.js";
 
 // ---------------------------------------------------------------------------
 // Fakes for the N+1 substrate. The module records create/kill BY id and exposes
@@ -122,6 +123,15 @@ function makeRendezvous(count: number): () => Promise<void> {
     if (arrived >= count) release();
     await gate;
   };
+}
+
+async function waitForCondition(label: string, condition: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await condition()) return;
+    await new Promise<void>((resolve) => { setTimeout(resolve, 25); });
+  }
+  throw new Error(`Timed out waiting for ${label}`);
 }
 
 function makeTrace(args: { persona: { id: string; traitsApplied: string[]; promptDigest: string }; status: ActorStatus; completionReason: ActorCompletionReason; actions: number; messages: number }): ActorTrace {
@@ -397,6 +407,94 @@ describe("runConcurrentSharedWorld (the heart: real orchestration + rendezvous l
     // Per-actor traces written.
     const actorsDir = await readdir(path.join(cwd, ".mimetic", "runs", result.runId, "actors"));
     expect(actorsDir.sort()).toEqual(["stream-001.json", "stream-002.json", "stream-003.json"]);
+  });
+
+  it("publishes an attached live Observer while concurrent actors are still running", async () => {
+    const state = { worldVersion: 0 };
+    const { hooks } = baseHooks(state, async () => {});
+    const runId = "concurrent-shared-world-live-observer";
+    const runRoot = path.join(cwd, ".mimetic", "runs", runId);
+    let actorSessionsStarted = 0;
+    let resolveActorsStarted: () => void = () => {};
+    const actorsStarted = new Promise<void>((resolve) => { resolveActorsStarted = resolve; });
+    let releaseActors: () => void = () => {};
+    const actorsReleased = new Promise<void>((resolve) => { releaseActors = resolve; });
+    let readyObserver: (ObserverResult & { ok: true }) | undefined;
+    let observerServer: ObserverServer | undefined;
+
+    hooks.runSession = async (options: CuaActorSessionOptions): Promise<CuaLoopResult> => {
+      actorSessionsStarted += 1;
+      if (actorSessionsStarted >= 3) {
+        resolveActorsStarted();
+      }
+      await actorsReleased;
+      state.worldVersion += 1;
+      const trace = makeTrace({ persona: options.persona, status: "passed", completionReason: "goal_satisfied", actions: 1, messages: 1 });
+      return { status: "passed", completionReason: "goal_satisfied", reason: trace.reason, trace };
+    };
+
+    const runPromise = runConcurrentSharedWorld({
+      cwd,
+      config: concurrentConfig(3, 3),
+      dryRun: false,
+      hooks,
+      onObserverReady: async (observer) => {
+        readyObserver = observer;
+        observerServer = await serveObserver(observer, { port: 0 });
+      },
+      runId
+    });
+
+    try {
+      await waitForCondition("observer server", () => observerServer !== undefined);
+      await actorsStarted;
+      await waitForCondition("all actor sessions started", () => actorSessionsStarted === 3);
+
+      const persistedRunText = await readFile(path.join(runRoot, "run.json"), "utf8");
+      expect(persistedRunText).not.toContain("fake-auth-key");
+      expect(persistedRunText).not.toContain("stream.invalid");
+
+      const persistedObserverDataText = await readFile(path.join(runRoot, "observer", "observer-data.json"), "utf8");
+      expect(persistedObserverDataText).not.toContain("fake-auth-key");
+      expect(persistedObserverDataText).not.toContain("stream.invalid");
+      const persistedObserverData = JSON.parse(persistedObserverDataText) as {
+        events: Array<{ type: string }>;
+        streams: Array<{ status: string }>;
+        summary: { active: number };
+      };
+      expect(persistedObserverData.summary.active).toBe(3);
+      expect(persistedObserverData.streams.map((stream) => stream.status)).toEqual(["running", "running", "running"]);
+      expect(persistedObserverData.events.filter((event) => event.type === "actor.running")).toHaveLength(3);
+
+      expect(readyObserver).toBeTruthy();
+      expect(observerServer).toBeTruthy();
+      const served = await fetch(new URL("observer-data.json", observerServer!.url));
+      const servedObserverData = await served.json() as {
+        streams: Array<{ embed?: { kind: string; url?: string }; transport: string; url?: string }>;
+      };
+      expect(servedObserverData.streams).toHaveLength(3);
+      expect(servedObserverData.streams.every((stream) => stream.transport === "sse")).toBe(true);
+      expect(servedObserverData.streams.every((stream) => stream.embed?.kind === "iframe")).toBe(true);
+      expect(servedObserverData.streams.every((stream) => stream.url === "https://stream.invalid/fake-auth-key")).toBe(true);
+
+      releaseActors();
+      const result = await runPromise;
+      expect(result.ok).toBe(true);
+
+      const finalObserverData = JSON.parse(await readFile(path.join(runRoot, "observer", "observer-data.json"), "utf8")) as {
+        summary: { active: number };
+        streams: Array<{ status: string }>;
+      };
+      expect(finalObserverData.summary.active).toBe(0);
+      expect(finalObserverData.streams.map((stream) => stream.status)).toEqual(["passed", "passed", "passed"]);
+      const finalRunText = await readFile(path.join(runRoot, "run.json"), "utf8");
+      expect(finalRunText).not.toContain("fake-auth-key");
+      expect(finalRunText).not.toContain("stream.invalid");
+    } finally {
+      releaseActors();
+      await observerServer?.close();
+      await runPromise.catch(() => undefined);
+    }
   });
 
   it("adapter fail score turns a coherent concurrent shared-world run red while keeping evidence verifiable", async () => {

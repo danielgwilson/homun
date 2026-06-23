@@ -48,7 +48,7 @@ export interface ObserverServer {
   close(): Promise<void>;
 }
 
-interface ObserverRuntimeStreamUrl {
+export interface ObserverRuntimeStreamUrl {
   streamId: string;
   url: string;
 }

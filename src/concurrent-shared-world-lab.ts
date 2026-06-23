@@ -36,6 +36,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   adapterScoreFailureMessage,
@@ -67,7 +68,13 @@ import {
   type LabActorLane,
   type LabConfig
 } from "./lab-config.js";
-import { renderObserver, type ObserverResult } from "./observer.js";
+import { buildObserverData } from "./observer-data.js";
+import {
+  attachObserverRuntimeStreamUrls,
+  renderObserver,
+  type ObserverResult,
+  type ObserverRuntimeStreamUrl
+} from "./observer.js";
 import { redactText } from "./redaction.js";
 import {
   combineCheckpointDigest,
@@ -128,6 +135,7 @@ export interface RunConcurrentSharedWorldLabOptions {
   dryRun: boolean;
   open?: boolean;
   runId?: string;
+  onObserverReady?: (observer: ObserverResult & { ok: true }) => Promise<void> | void;
   hooks?: SharedWorldLabHooks;
 }
 
@@ -290,6 +298,61 @@ function buildActorSpec(config: LabConfig, role: LabActorLane, index: number): C
   };
 }
 
+async function writeConcurrentRunArtifacts(
+  cwd: string,
+  artifactRoot: string,
+  bundle: RunBundle
+): Promise<void> {
+  const publicBundle: RunBundle = {
+    ...bundle,
+    cwd: PUBLIC_TARGET_CWD
+  };
+  await writeFile(path.join(artifactRoot, "run.json"), `${JSON.stringify(publicBundle, null, 2)}\n`, "utf8");
+  await writeFile(path.join(artifactRoot, "review.json"), `${JSON.stringify(publicBundle.review, null, 2)}\n`, "utf8");
+  await writeFile(path.join(artifactRoot, "review.md"), renderConcurrentReviewMarkdown(publicBundle), "utf8");
+  await writeFile(path.join(artifactRoot, "events.ndjson"), `${publicBundle.events.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
+  await mkdir(path.join(artifactRoot, "observer"), { recursive: true });
+  await writeFile(
+    path.join(artifactRoot, "observer", "observer-data.json"),
+    `${JSON.stringify(buildObserverData(publicBundle), null, 2)}\n`,
+    "utf8"
+  );
+  await writeFile(
+    path.join(cwd, ".mimetic", "runs", "latest.json"),
+    `${JSON.stringify({
+      schema: "mimetic.latest-run.v1",
+      runId: publicBundle.runId,
+      path: path.join(".mimetic", "runs", publicBundle.runId),
+      updatedAt: new Date().toISOString()
+    }, null, 2)}\n`,
+    "utf8"
+  );
+}
+
+function observerResultForConcurrentArtifacts(
+  cwd: string,
+  runId: string,
+  artifactRoot: string,
+  warnings: string[] = []
+): ObserverResult & { ok: true } {
+  const observerPath = path.join(artifactRoot, "observer", "index.html");
+  const observerDataPath = path.join(artifactRoot, "observer", "observer-data.json");
+  const eventsPath = path.join(artifactRoot, "events.ndjson");
+  return {
+    schema: "mimetic.observer-result.v1",
+    ok: true,
+    cwd,
+    run: runId,
+    observerPath: path.relative(cwd, observerPath),
+    observerDataPath: path.relative(cwd, observerDataPath),
+    eventsPath: path.relative(cwd, eventsPath),
+    observerUrl: pathToFileURL(observerPath).href,
+    bundlePath: path.join(artifactRoot, "run.json"),
+    opened: false,
+    warnings
+  };
+}
+
 export async function runConcurrentSharedWorld(options: RunConcurrentSharedWorldLabOptions): Promise<ConcurrentSharedWorldLabResult> {
   const { config, dryRun } = options;
   const cwd = path.resolve(options.cwd);
@@ -388,6 +451,8 @@ export async function runConcurrentSharedWorld(options: RunConcurrentSharedWorld
   let getHostUrl: string | undefined;
   let runError: string | undefined;
   let snapshotIndex = 0;
+  let liveObserver: (ObserverResult & { ok: true }) | undefined;
+  const runtimeStreamUrls: ObserverRuntimeStreamUrl[] = [];
 
   if (!dryRun) {
     let subjectModule: E2BDesktopModule | undefined;
@@ -477,6 +542,37 @@ export async function runConcurrentSharedWorld(options: RunConcurrentSharedWorld
 
       // Baseline state snapshot, then start the background cadence prober.
       await proberSnapshot();
+      if (options.onObserverReady) {
+        const inProgressSubject: RunSubjectProvenance = {
+          source: "clone",
+          repo: publicRepo,
+          ...(subjectCommit === undefined ? {} : { commit: subjectCommit }),
+          envNames: subjectEnvNames,
+          state: resolveSubjectState({ declared: config.subject.state, dryRun: false, executed: stateStepRecords })
+        };
+        const inProgressBundle = buildConcurrentSharedWorldBundle({
+          config,
+          descriptor,
+          createdAt,
+          dryRun: false,
+          inProgress: true,
+          runId,
+          source,
+          roles,
+          actorSpecs,
+          actorResults: [],
+          stateSnapshots,
+          subject: inProgressSubject,
+          seedDigest,
+          ...(subjectCommit === undefined ? {} : { subjectCommit }),
+          hostDigest: hostOriginDigest(getHostUrl!)
+        });
+        await writeConcurrentRunArtifacts(cwd, artifactRoot, inProgressBundle);
+        liveObserver = observerResultForConcurrentArtifacts(cwd, runId, artifactRoot, [
+          "Live concurrent shared-world Observer is attached before final verification; stream auth URLs are runtime-only and are not persisted."
+        ]);
+        await options.onObserverReady(liveObserver);
+      }
       proberLoop = (async () => {
         while (!proberDisposed) {
           let timer: ReturnType<typeof setTimeout> | undefined;
@@ -498,7 +594,13 @@ export async function runConcurrentSharedWorld(options: RunConcurrentSharedWorld
         ...(hooks.loadDesktopModule ? { loadDesktopModule: hooks.loadDesktopModule } : {}),
         ...(hooks.detachedTimers ? { detachedTimers: hooks.detachedTimers } : {}),
         ...(hooks.env ? { env: hooks.env } : {}),
-        ...(hooks.prepareDesktop ? { prepareDesktop: (desktop: E2BDesktopSandbox) => hooks.prepareDesktop!(desktop) } : {})
+        ...(hooks.prepareDesktop ? { prepareDesktop: (desktop: E2BDesktopSandbox) => hooks.prepareDesktop!(desktop) } : {}),
+        onRuntimeStreamReady: (stream) => {
+          runtimeStreamUrls.push({ streamId: stream.streamId, url: stream.url });
+          if (liveObserver) {
+            attachObserverRuntimeStreamUrls(liveObserver, runtimeStreamUrls);
+          }
+        }
       };
       const baseActorDeps: Omit<CuaLaneDeps, "signalProvisioned" | "appUrl"> = {
         config,
@@ -606,17 +708,12 @@ export async function runConcurrentSharedWorld(options: RunConcurrentSharedWorld
     hookLabel: "sharedWorldHooks"
   });
 
-  await writeFile(path.join(artifactRoot, "run.json"), `${JSON.stringify(bundle, null, 2)}\n`, "utf8");
-  await writeFile(path.join(artifactRoot, "review.json"), `${JSON.stringify(bundle.review, null, 2)}\n`, "utf8");
-  await writeFile(path.join(artifactRoot, "review.md"), renderConcurrentReviewMarkdown(bundle), "utf8");
-  await writeFile(path.join(artifactRoot, "events.ndjson"), `${bundle.events.map((event) => JSON.stringify(event)).join("\n")}\n`, "utf8");
-  await writeFile(
-    path.join(cwd, ".mimetic", "runs", "latest.json"),
-    `${JSON.stringify({ schema: "mimetic.latest-run.v1", runId, path: path.join(".mimetic", "runs", runId), updatedAt: createdAt }, null, 2)}\n`,
-    "utf8"
-  );
+  await writeConcurrentRunArtifacts(cwd, artifactRoot, bundle);
 
   const observer = await render(cwd, runId, { open: options.open === true });
+  if (observer.ok && liveObserver) {
+    attachObserverRuntimeStreamUrls(observer as ObserverResult & { ok: true }, runtimeStreamUrls);
+  }
 
   const roleOk = (result: ActorLaneResult | undefined): boolean => {
     if (dryRun) return true;
@@ -735,6 +832,7 @@ export function buildConcurrentSharedWorldBundle(args: {
   descriptor: CuaActorDescriptor;
   createdAt: string;
   dryRun: boolean;
+  inProgress?: boolean;
   runId: string;
   source: RunBundle["source"];
   roles: LabActorLane[];
@@ -748,6 +846,7 @@ export function buildConcurrentSharedWorldBundle(args: {
   runError?: string;
 }): RunBundle {
   const { config, descriptor, createdAt, dryRun, actorSpecs, actorResults, roles } = args;
+  const inProgress = args.inProgress === true;
   const simulations: RunSimulation[] = [];
   const streams: RunStream[] = [];
   const events: RunEvent[] = [];
@@ -790,10 +889,14 @@ export function buildConcurrentSharedWorldBundle(args: {
       ? session.status
       : outcome?.sessionError
         ? "failed"
-        : "contract_proof_only";
+        : inProgress
+          ? "running"
+          : "contract_proof_only";
     const reason = session?.reason
       ?? outcome?.sessionError
-      ?? "Contract actor only: dry-run produced the evidence shape without launching a desktop or spending provider tokens.";
+      ?? (inProgress
+        ? "Actor desktop is running; the attached Observer hydrates the runtime stream URL without persisting it."
+        : "Contract actor only: dry-run produced the evidence shape without launching a desktop or spending provider tokens.");
     const traceScreenshotMode = session?.trace.redaction.screenshots;
     const screenshotMode: "raw" | "blurred" =
       traceScreenshotMode === "raw" || traceScreenshotMode === "blurred"
@@ -808,12 +911,14 @@ export function buildConcurrentSharedWorldBundle(args: {
       status,
       streamKind: "browser",
       mode: "browser-sim",
-      progress: session || outcome?.sessionError ? 1 : 0.25,
+      progress: session || outcome?.sessionError ? 1 : inProgress ? 0.35 : 0.25,
       currentStep: reason,
       summary: session
         ? `Persona ${spec.laneId}${taxonomy} (${spec.persona.id}): drove the shared plane concurrently; ${session.completionReason}.`
         : outcome?.sessionError
           ? `Persona ${spec.laneId}${taxonomy} failed before a terminal session verdict: ${outcome.sessionError}`
+          : inProgress
+            ? `Persona ${spec.laneId}${taxonomy} (${spec.persona.id}) is running against the shared plane.`
           : `Contract persona ${spec.laneId}${taxonomy} (${spec.persona.id}) for ${descriptor.id} against the shared plane at ${appUrl}.`,
       streamIds: [spec.streamId],
       startedAt: createdAt,
@@ -880,6 +985,16 @@ export function buildConcurrentSharedWorldBundle(args: {
         simId: spec.simId,
         streamId: spec.streamId
       });
+    } else if (inProgress) {
+      events.push({
+        id: nextEventId(`running-${spec.laneId}`),
+        at: createdAt,
+        level: "info",
+        type: "actor.running",
+        message: `Persona ${spec.laneId}: desktop actor is running; live stream URL is runtime-only and not persisted.`,
+        simId: spec.simId,
+        streamId: spec.streamId
+      });
     } else {
       events.push({
         id: nextEventId(`contract-${spec.laneId}`),
@@ -909,7 +1024,7 @@ export function buildConcurrentSharedWorldBundle(args: {
       streamId: spec.streamId,
       startedAt: result?.startedAt ?? 0,
       endedAt: result?.endedAt ?? 0,
-      verdict: session ? session.status : result?.outcome.sessionError ? "failed" : "contract_proof_only",
+      verdict: session ? session.status : result?.outcome.sessionError ? "failed" : inProgress ? "running" : "contract_proof_only",
       routeHostDigest,
       ...(planeCommit === undefined ? {} : { commit: planeCommit }),
       seedDigest: args.seedDigest
@@ -931,7 +1046,7 @@ export function buildConcurrentSharedWorldBundle(args: {
       ...(spec.caseGroup === undefined ? {} : { caseGroup: spec.caseGroup }),
       simId: spec.simId,
       streamId: spec.streamId,
-      status: session ? session.status : result?.outcome.sessionError ? "failed" : "contract_proof_only",
+      status: session ? session.status : result?.outcome.sessionError ? "failed" : inProgress ? "running" : "contract_proof_only",
       ...(session ? { completionReason: session.completionReason } : {}),
       ok
     };
@@ -969,6 +1084,8 @@ export function buildConcurrentSharedWorldBundle(args: {
   // session → pass; otherwise fail. Per-persona mission success is the M-of-N in outcomes[].
   const verdict: ReviewSummary["verdict"] = dryRun
     ? "contract_proof_only"
+    : inProgress
+      ? "contract_proof_only"
     : (actorResults.length === actorSpecs.length
         && actorResults.every(actorLanePassed)
         ? "pass"
@@ -980,9 +1097,13 @@ export function buildConcurrentSharedWorldBundle(args: {
     verdict,
     summary: dryRun
       ? `Dry-run concurrent shared-world contract: ${actorSpecs.length} persona(s) declared against ONE getHost-exposed plane (${descriptor.id}); no sandboxes launched, $0 spend.`
+      : inProgress
+        ? `In-progress concurrent shared-world Observer snapshot: ${actorSpecs.length} persona(s) running against ONE shared plane; final verification is pending.`
       : `Concurrent shared-world (ONE plane, ${actorSpecs.length} simultaneous personas): swarm ${verdict === "pass" ? "ran coherently" : "did not run coherently"}; ${passedMissions}/${actorSpecs.length} reached their goal; overlap ${overlaps ? "proven" : "not observed"}; ${deltas} state delta(s) under load.`,
     gaps: dryRun
       ? ["Live concurrent shared-world session not yet run (dry-run contract only); the concurrency capability at scale is backed only by the deferred live receipt."]
+      : inProgress
+        ? ["Final actor traces, screenshots, state deltas, and verification are pending; this Observer is for live watch only."]
       : actorResults
           .filter((result) => result.outcome.sessionError !== undefined || result.outcome.noEngagement || result.outcome.session === undefined || result.outcome.session.status !== "passed")
           .map((result) => `${result.spec.laneId}: ${result.outcome.sessionError ?? result.outcome.session?.reason ?? "did not pass"}`)
@@ -1029,6 +1150,8 @@ export function buildConcurrentSharedWorldBundle(args: {
         ? anyRaw
           ? "Typed text recorded as length only and reasoning/messages pass through text redaction. Some personas captured FULL-FIDELITY (raw) screenshots, retained for local use — NOT redacted for publishing; set policies.redactScreenshots: true to blur a share-as-is bundle. stateSeries persists digest-only."
           : "Typed text recorded as length only and reasoning/messages pass through text redaction. Screenshots are blurred at capture (policies.redactScreenshots: true) for a share-as-is bundle. stateSeries persists digest-only."
+        : inProgress
+          ? "In-progress live Observer snapshot: runtime stream auth URLs are process-local only and are not persisted. Final typed text, traces, and screenshots are pending. stateSeries persists digest-only."
         : "Dry-run concurrent shared-world contract bundle: no sandboxes launched and no screenshots captured. Typed text is recorded as length only and reasoning/messages pass through text redaction whenever a session runs. stateSeries persists digest-only."
     },
     artifacts: {
