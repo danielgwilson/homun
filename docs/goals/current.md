@@ -1,6 +1,6 @@
 # Current Goals
 
-Status date: 2026-06-23 (rev 10)
+Status date: 2026-06-23 (rev 11)
 
 This page is the current public-safe operating goal for `mimetic-cli`. Keep it
 short enough to reread before a coding session and concrete enough that future
@@ -240,6 +240,13 @@ Adopter-driven roster/readback ergonomics (0.12.0):
 - `actors[0].roster[]` is compact authoring sugar for repeated lane groups. The parser expands it
   into deterministic `lanes[]` (`<group.id>-01`, `<group.id>-02`, ...) before the engine runs, so
   the runtime and run bundle keep one normalized lane shape. `done`
+
+Provenance hardening (0.12.1):
+
+- Clone-subject provenance now refreshes after successful provisioning phases, so `subject.commit`
+  records the served subject HEAD rather than only the initial clone HEAD. This preserves truthful
+  run-bundle provenance when an adopter's install/provisioning step checks out the exact revision to
+  test. `done`
 
 ### 6. Lab Manifest Shape
 
