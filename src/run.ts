@@ -622,6 +622,12 @@ export interface RunBundle {
     resolved?: string;
   };
   /**
+   * Optional lineage for a run that intentionally re-executes selected lanes from a prior
+   * multi-lane run. This keeps retry-like workflows explicit: the new run is linked to the old
+   * evidence, but it never mutates or silently "fixes" the original verdict.
+   */
+  rerun?: RunRerunLineage;
+  /**
    * The interaction-attribution honesty axis (#164). Absent == `isolated` (every existing bundle
    * byte-stable). Set to `shared-world` by the shared-world backend, paired with `sharedWorld`.
    */
@@ -638,6 +644,19 @@ export interface RunBundle {
    * The default mission-based verdict (`review`) is unchanged when no scorer hook is given.
    */
   adapterScore?: RunAdapterScore;
+}
+
+export interface RunRerunLineage {
+  sourceRunId: string;
+  selectedLaneIds: string[];
+  previous: Array<{
+    laneId: string;
+    streamId?: string;
+    status: string;
+    reason?: string;
+    actorStatus?: string;
+    completionReason?: string;
+  }>;
 }
 
 export interface ReviewSummary {
@@ -689,6 +708,7 @@ export interface RunResult {
       | "MIMETIC_INVALID_TIMEOUT"
       | "MIMETIC_INVALID_PORT"
       | "MIMETIC_UNSUPPORTED_ACTOR"
+      | "MIMETIC_UNSUPPORTED_RERUN_FLAGS"
       | "MIMETIC_WATCH_OPTION_CONFLICT";
     message: string;
   };
@@ -3568,6 +3588,14 @@ export async function verifyRun(cwdInput: string, runInput: string): Promise<Ver
       ? "live shared-world runs either are absent or carry a well-formed alternating timeline (cp-baseline → turn → cp), single-plane provenance, digest-only checkpoints, the mandatory attributionLimits, and a checkpoint delta on a passed run"
       : `shared-world findings: ${sharedWorldFindings.join(", ")}`
   });
+  const rerunFindings = isRunBundle(bundle) ? rerunLineageFindings(bundle) : [];
+  checks.push({
+    name: "rerun lineage",
+    ok: rerunFindings.length === 0,
+    message: rerunFindings.length === 0
+      ? "rerun bundles either are absent or link selected lanes to prior lane status and a fan-out rerun event"
+      : `rerun lineage findings: ${rerunFindings.join(", ")}`
+  });
 
   const ok = checks.every((check) => check.ok);
   const warnings = isRunBundle(bundle)
@@ -4492,6 +4520,57 @@ function subjectStateFindings(bundle: RunBundle): string[] {
   return findings;
 }
 
+function rerunLineageFindings(bundle: RunBundle): string[] {
+  const rerun = bundle.rerun;
+  if (!rerun) {
+    return [];
+  }
+
+  const findings: string[] = [];
+  const selectedLaneIds = rerun.selectedLaneIds;
+  const selectedSet = new Set(selectedLaneIds);
+  const previousLaneIds = rerun.previous.map((entry) => entry.laneId);
+  const previousSet = new Set(previousLaneIds);
+  const currentLaneIds = bundle.streams.map((stream) => stream.laneId);
+  const currentConcreteLaneIds = currentLaneIds.filter((laneId): laneId is string =>
+    typeof laneId === "string" && laneId.trim().length > 0
+  );
+  const currentSet = new Set(currentConcreteLaneIds);
+
+  if (selectedSet.size !== selectedLaneIds.length) {
+    findings.push("selectedLaneIds contains duplicate lane ids");
+  }
+  if (previousSet.size !== previousLaneIds.length) {
+    findings.push("previous contains duplicate lane ids");
+  }
+  if (currentConcreteLaneIds.length !== bundle.streams.length) {
+    findings.push("every rerun stream must carry a laneId");
+  }
+  for (const laneId of selectedLaneIds) {
+    if (!previousSet.has(laneId)) {
+      findings.push(`selected lane ${laneId} is missing prior status`);
+    }
+    if (!currentSet.has(laneId)) {
+      findings.push(`selected lane ${laneId} is missing from current streams`);
+    }
+  }
+  for (const laneId of previousLaneIds) {
+    if (!selectedSet.has(laneId)) {
+      findings.push(`previous lane ${laneId} was not selected`);
+    }
+  }
+  for (const laneId of currentConcreteLaneIds) {
+    if (!selectedSet.has(laneId)) {
+      findings.push(`current stream lane ${laneId} was not selected`);
+    }
+  }
+  if (!bundle.events.some((event) => event.type === "cua-lab.fanout.rerun")) {
+    findings.push("missing cua-lab.fanout.rerun event");
+  }
+
+  return findings;
+}
+
 // SEQUENTIAL: the three disclosures a sequential shared-world bundle MUST pin (verify fails closed
 // if any is absent — omission overclaims): sequential turns only, no concurrency/races handled, and
 // a checkpoint delta is attributed to the TURN it followed, not a specific action (correlation).
@@ -5046,6 +5125,7 @@ function isRunBundle(value: unknown): value is RunBundle {
     // block; when present it must be well-shaped (semantics are the verify check's job).
     && (value.subject === undefined || isRunSubjectProvenance(value.subject))
     && (value.desktopBrowser === undefined || isDesktopBrowserEvidence(value.desktopBrowser))
+    && (value.rerun === undefined || isRunRerunLineage(value.rerun))
     // Optional + additive shared-world fields (#164). Tolerant SHAPE guard only — the interaction
     // semantics (timeline well-formedness, single-plane, delta-on-pass) are the verify check's job.
     && (value.attributionClass === undefined || value.attributionClass === "isolated" || value.attributionClass === "shared-world")
@@ -5053,6 +5133,27 @@ function isRunBundle(value: unknown): value is RunBundle {
     // Optional, adapter-namespaced product score (the extension seam). When present, validate only
     // its SHAPE; core never reads the adapter's `data` payload.
     && (value.adapterScore === undefined || isRunAdapterScore(value.adapterScore));
+}
+
+function isRunRerunLineage(value: unknown): value is RunRerunLineage {
+  return isRecord(value)
+    && typeof value.sourceRunId === "string"
+    && value.sourceRunId.trim().length > 0
+    && Array.isArray(value.selectedLaneIds)
+    && value.selectedLaneIds.length > 0
+    && value.selectedLaneIds.every((laneId) => typeof laneId === "string" && laneId.trim().length > 0)
+    && Array.isArray(value.previous)
+    && value.previous.length > 0
+    && value.previous.every((entry) =>
+      isRecord(entry)
+      && typeof entry.laneId === "string"
+      && entry.laneId.trim().length > 0
+      && (entry.streamId === undefined || typeof entry.streamId === "string")
+      && typeof entry.status === "string"
+      && entry.status.trim().length > 0
+      && (entry.reason === undefined || typeof entry.reason === "string")
+      && (entry.actorStatus === undefined || typeof entry.actorStatus === "string")
+      && (entry.completionReason === undefined || typeof entry.completionReason === "string"));
 }
 
 function isDesktopBrowserEvidence(value: unknown): value is RunBundle["desktopBrowser"] {
