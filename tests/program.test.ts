@@ -355,6 +355,43 @@ describe("mimetic CLI scaffold", () => {
     });
   });
 
+  it("fails closed when rerun flags are used on a non-CUA lab", async () => {
+    await withTempApp({
+      "package.json": JSON.stringify({ name: "fixture-app" }, null, 2),
+      "mimetic/labs/first-run.yaml": [
+        "schema: mimetic.lab.v2",
+        "id: first-run",
+        "subject:",
+        "  source: this-repo",
+        "actors:",
+        "  - type: synthetic-persona",
+        "scenario:",
+        "  mode: dry-run"
+      ].join("\n")
+    }, async (cwd) => {
+      const result = await runCli([
+        "lab",
+        "run",
+        "first-run",
+        "--cwd",
+        cwd,
+        "--rerun-failed-from",
+        "latest",
+        "--json"
+      ]);
+
+      const envelope = JSON.parse(result.stdout) as {
+        ok: boolean;
+        error: { code: string; message: string };
+      };
+      expect(result.exitCode).toBe(2);
+      expect(envelope.ok).toBe(false);
+      expect(envelope.error.code).toBe("MIMETIC_UNSUPPORTED_RERUN_FLAGS");
+      expect(envelope.error.message).toContain("CUA fan-out");
+      expect(envelope.error.message).toContain("synthetic");
+    });
+  });
+
   it("fails closed when direct run-only options are mixed with lab manifests", async () => {
     await withTempApp({
       "package.json": JSON.stringify({ name: "fixture-app" }, null, 2),

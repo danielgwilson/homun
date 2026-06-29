@@ -1147,7 +1147,7 @@ function registerLabCommands(parent: Command, io: CliIo): void {
         "",
         "Examples:",
         "  mimetic lab run first-run",
-        "  mimetic lab run first-run --rerun-failed-from latest --lanes lane-02,lane-04",
+        "  mimetic lab run fanout-demo --rerun-failed-from latest --lanes lane-02,lane-04",
         "  mimetic lab run oss --dry-run --json --no-open",
         "  mimetic lab run .mimetic/labs/private-dogfood.yaml --env-file .mimetic/local/provider.env",
         "",
@@ -1450,6 +1450,10 @@ async function runLabCommand(args: {
 
   const config = resolved.config;
   const backend = selectLabBackend(config);
+  if (backend !== "cua" && labRerunFlagsRequested(args.options)) {
+    writeUnsupportedRerunFlagsResult(args, backend);
+    return;
+  }
   switch (backend) {
     case "synthetic":
       await runSyntheticBackend({ ...args, config });
@@ -1479,6 +1483,29 @@ async function runLabCommand(args: {
       // Compile-time exhaustiveness: a future backend must be handled here, not silently no-op.
       throw new Error(`Unhandled lab backend: ${String(backend satisfies never)}`);
   }
+}
+
+function labRerunFlagsRequested(options: LabCommandOptions): boolean {
+  return options.rerunFailedFrom !== undefined || options.lanes !== undefined;
+}
+
+function writeUnsupportedRerunFlagsResult(args: {
+  command: Command;
+  io: CliIo;
+  options: LabCommandOptions;
+}, backend: string): void {
+  const result: RunResult = {
+    schema: "mimetic.run-result.v1",
+    ok: false,
+    cwd: resolve(args.options.cwd),
+    warnings: [],
+    error: {
+      code: "MIMETIC_UNSUPPORTED_RERUN_FLAGS",
+      message: `--rerun-failed-from/--lanes apply only to CUA fan-out labs; this lab resolved to ${backend}.`
+    }
+  };
+  writeResult(args.command, args.io, result, formatRunHuman);
+  args.io.setExitCode(2);
 }
 
 async function runSyntheticBackend(args: {

@@ -708,6 +708,7 @@ export interface RunResult {
       | "MIMETIC_INVALID_TIMEOUT"
       | "MIMETIC_INVALID_PORT"
       | "MIMETIC_UNSUPPORTED_ACTOR"
+      | "MIMETIC_UNSUPPORTED_RERUN_FLAGS"
       | "MIMETIC_WATCH_OPTION_CONFLICT";
     message: string;
   };
@@ -3587,6 +3588,14 @@ export async function verifyRun(cwdInput: string, runInput: string): Promise<Ver
       ? "live shared-world runs either are absent or carry a well-formed alternating timeline (cp-baseline → turn → cp), single-plane provenance, digest-only checkpoints, the mandatory attributionLimits, and a checkpoint delta on a passed run"
       : `shared-world findings: ${sharedWorldFindings.join(", ")}`
   });
+  const rerunFindings = isRunBundle(bundle) ? rerunLineageFindings(bundle) : [];
+  checks.push({
+    name: "rerun lineage",
+    ok: rerunFindings.length === 0,
+    message: rerunFindings.length === 0
+      ? "rerun bundles either are absent or link selected lanes to prior lane status and a fan-out rerun event"
+      : `rerun lineage findings: ${rerunFindings.join(", ")}`
+  });
 
   const ok = checks.every((check) => check.ok);
   const warnings = isRunBundle(bundle)
@@ -4511,6 +4520,57 @@ function subjectStateFindings(bundle: RunBundle): string[] {
   return findings;
 }
 
+function rerunLineageFindings(bundle: RunBundle): string[] {
+  const rerun = bundle.rerun;
+  if (!rerun) {
+    return [];
+  }
+
+  const findings: string[] = [];
+  const selectedLaneIds = rerun.selectedLaneIds;
+  const selectedSet = new Set(selectedLaneIds);
+  const previousLaneIds = rerun.previous.map((entry) => entry.laneId);
+  const previousSet = new Set(previousLaneIds);
+  const currentLaneIds = bundle.streams.map((stream) => stream.laneId);
+  const currentConcreteLaneIds = currentLaneIds.filter((laneId): laneId is string =>
+    typeof laneId === "string" && laneId.trim().length > 0
+  );
+  const currentSet = new Set(currentConcreteLaneIds);
+
+  if (selectedSet.size !== selectedLaneIds.length) {
+    findings.push("selectedLaneIds contains duplicate lane ids");
+  }
+  if (previousSet.size !== previousLaneIds.length) {
+    findings.push("previous contains duplicate lane ids");
+  }
+  if (currentConcreteLaneIds.length !== bundle.streams.length) {
+    findings.push("every rerun stream must carry a laneId");
+  }
+  for (const laneId of selectedLaneIds) {
+    if (!previousSet.has(laneId)) {
+      findings.push(`selected lane ${laneId} is missing prior status`);
+    }
+    if (!currentSet.has(laneId)) {
+      findings.push(`selected lane ${laneId} is missing from current streams`);
+    }
+  }
+  for (const laneId of previousLaneIds) {
+    if (!selectedSet.has(laneId)) {
+      findings.push(`previous lane ${laneId} was not selected`);
+    }
+  }
+  for (const laneId of currentConcreteLaneIds) {
+    if (!selectedSet.has(laneId)) {
+      findings.push(`current stream lane ${laneId} was not selected`);
+    }
+  }
+  if (!bundle.events.some((event) => event.type === "cua-lab.fanout.rerun")) {
+    findings.push("missing cua-lab.fanout.rerun event");
+  }
+
+  return findings;
+}
+
 // SEQUENTIAL: the three disclosures a sequential shared-world bundle MUST pin (verify fails closed
 // if any is absent — omission overclaims): sequential turns only, no concurrency/races handled, and
 // a checkpoint delta is attributed to the TURN it followed, not a specific action (correlation).
@@ -5083,6 +5143,7 @@ function isRunRerunLineage(value: unknown): value is RunRerunLineage {
     && value.selectedLaneIds.length > 0
     && value.selectedLaneIds.every((laneId) => typeof laneId === "string" && laneId.trim().length > 0)
     && Array.isArray(value.previous)
+    && value.previous.length > 0
     && value.previous.every((entry) =>
       isRecord(entry)
       && typeof entry.laneId === "string"

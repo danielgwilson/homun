@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -500,6 +500,38 @@ describe("cua fan-out — live with FAKE substrate ($0, real orchestration)", ()
 
     const verified = await verifyRun(cwd, "fanout-rerun-proof");
     expect(verified.ok).toBe(true);
+
+    await writeFile(
+      path.join(cwd, ".mimetic", "runs", "fanout-rerun-proof", "run.json"),
+      `${JSON.stringify({ ...rerunBundle, rerun: { ...rerunBundle.rerun!, previous: [] } }, null, 2)}\n`,
+      "utf8"
+    );
+    const weakLineage = await verifyRun(cwd, "fanout-rerun-proof");
+    expect(weakLineage.ok).toBe(false);
+    expect(weakLineage.checks.find((check) => check.name === "run bundle shape")?.ok).toBe(false);
+
+    await writeFile(
+      path.join(cwd, ".mimetic", "runs", "fanout-rerun-proof", "run.json"),
+      `${JSON.stringify({ ...rerunBundle, events: rerunBundle.events.filter((event) => event.type !== "cua-lab.fanout.rerun") }, null, 2)}\n`,
+      "utf8"
+    );
+    const missingEvent = await verifyRun(cwd, "fanout-rerun-proof");
+    expect(missingEvent.ok).toBe(false);
+    const rerunCheck = missingEvent.checks.find((check) => check.name === "rerun lineage");
+    expect(rerunCheck?.ok).toBe(false);
+    expect(rerunCheck?.message).toContain("missing cua-lab.fanout.rerun event");
+
+    await writeFile(
+      path.join(cwd, ".mimetic", "runs", "fanout-rerun-proof", "run.json"),
+      `${JSON.stringify({ ...rerunBundle, rerun: { ...rerunBundle.rerun!, selectedLaneIds: ["desktop-power", "ghost-lane"] } }, null, 2)}\n`,
+      "utf8"
+    );
+    const selectedMismatch = await verifyRun(cwd, "fanout-rerun-proof");
+    expect(selectedMismatch.ok).toBe(false);
+    const selectedMismatchCheck = selectedMismatch.checks.find((check) => check.name === "rerun lineage");
+    expect(selectedMismatchCheck?.ok).toBe(false);
+    expect(selectedMismatchCheck?.message).toContain("selected lane ghost-lane is missing prior status");
+    expect(selectedMismatchCheck?.message).toContain("selected lane ghost-lane is missing from current streams");
   });
 
   it("opens each lane's explicit target and records per-lane routes in the bundle", async () => {
