@@ -758,7 +758,7 @@ function stopWhenTraceItem(
     status: "matched",
     title: `stopWhen matched: ${match.id}`,
     text: redactNarration(
-      `Harness stop condition matched rule ${match.id} using ${match.kinds.join(", ")}. Raw observed URL/text/appState were runtime-only and were not persisted.`
+      `Harness stop condition matched rule ${match.id} using ${match.kinds.join(", ")}. Raw observed URL/text/appState were runtime-only and were not persisted; when a screenshot was available, the immediately preceding screenshot item is the visual evidence for the matched surface.`
     )
   };
 }

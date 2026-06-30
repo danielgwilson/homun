@@ -113,9 +113,12 @@ export function createE2BDesktopExecutor(
 
   return {
     async observe(): Promise<CuaObservation> {
+      // Probe browser state before the screenshot so a deterministic stopWhen match
+      // and its persisted frame describe the same settled surface as closely as the
+      // desktop substrate allows.
+      const browserState = await options.observeBrowserState?.().catch(() => undefined);
       const raw = await desktop.screenshot();
       const screenshot = toBuffer(raw);
-      const browserState = await options.observeBrowserState?.().catch(() => undefined);
       return {
         screenshot,
         stateSignature: perceptualSignature(screenshot),

@@ -260,6 +260,28 @@ describe("createE2BDesktopExecutor.observe", () => {
     expect(obs.stateSignature).toBe(perceptualSignature(SHOT));
   });
 
+  it("probes browser state before capturing the screenshot so stop evidence is less stale", async () => {
+    const { desktop, calls } = makeFakeDesktop(SHOT);
+    const executor = createE2BDesktopExecutor(desktop, {
+      observeBrowserState: async () => {
+        calls.push({ method: "observeBrowserState", args: [] });
+        return {
+          text: "Dashboard ready",
+          title: "Dashboard",
+          url: "https://example.test/dashboard",
+        };
+      },
+    });
+    const obs = await executor.observe();
+    expect(calls).toEqual([
+      { method: "observeBrowserState", args: [] },
+      { method: "screenshot", args: [] },
+    ]);
+    expect(obs.text).toBe("Dashboard ready");
+    expect(obs.title).toBe("Dashboard");
+    expect(obs.url).toBe("https://example.test/dashboard");
+  });
+
   it("coerces a Uint8Array screenshot result to a Buffer", async () => {
     const u8 = new Uint8Array(SHOT);
     const { desktop } = makeFakeDesktop(u8);
