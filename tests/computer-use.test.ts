@@ -187,7 +187,9 @@ describe("runComputerUseLoop", () => {
     expect(provider.seen).toHaveLength(1);
     expect(executor.actions).toHaveLength(1);
     expect(JSON.stringify(result.trace)).not.toContain("Saved successfully");
-    expect(result.trace.items.some((item) => item.kind === "notice" && item.status === "matched")).toBe(true);
+    const notice = result.trace.items.find((item) => item.kind === "notice" && item.status === "matched");
+    expect(notice?.text).toContain("immediately preceding screenshot item");
+    expect(notice?.text).not.toContain("Saved successfully");
   });
 
   it("can stop on an exact URL path plus page text after an action", async () => {
@@ -251,7 +253,11 @@ describe("runComputerUseLoop", () => {
     expect(provider.seen).toHaveLength(0);
     expect(executor.actions).toHaveLength(0);
     expect(JSON.stringify(result.trace)).not.toContain("workflow");
-    expect(result.trace.items.some((item) => item.kind === "notice" && item.status === "matched")).toBe(true);
+    const screenshotIndex = result.trace.items.findIndex((item) => item.kind === "screenshot");
+    const noticeIndex = result.trace.items.findIndex((item) => item.kind === "notice" && item.status === "matched");
+    expect(screenshotIndex).toBeGreaterThanOrEqual(0);
+    expect(noticeIndex).toBe(screenshotIndex + 1);
+    expect(result.trace.items[noticeIndex]?.text).toContain("immediately preceding screenshot item");
   });
 
   it("DEFAULT persists RAW full-fidelity frames (local fidelity) and never logs raw typed text", async () => {
