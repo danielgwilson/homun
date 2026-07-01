@@ -553,6 +553,12 @@ Core-owned fields:
   the subject failed the script while the harness executed faithfully)
 - `ids`, `counts`, `items[]`, optional `tokenUsage`, `capabilities`
 
+Unexpected actor-loop diagnostics live inside `items[]` as
+`kind: notice`, `status: error` rows. They are public-safe evidence, not crash
+dumps: redacted message, coarse phase, optional error name, last normalized UI
+action, and last screenshot reference. They must not carry raw stacks, env
+values, target URLs, or unredacted provider payloads.
+
 Adapter-owned fields:
 
 - the prompt, mission, persona text, and lane focus that produced the trace

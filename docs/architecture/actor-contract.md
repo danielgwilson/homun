@@ -211,6 +211,11 @@ export interface Actor {
   strings. Every call is recorded as an `items[kind=approval]`.
 - **Redaction.** Use the injected `RedactionHooks`. Never re-implement redaction
   per adapter.
+- **Diagnostics.** Unexpected actor-loop failures are recorded as
+  `items[kind=notice,status=error]`, not raw crash dumps. Keep diagnostic notices
+  public-safe: redacted message, coarse loop phase, last normalized UI action,
+  and last screenshot reference only. Do not persist raw stacks, env values,
+  target URLs, or unredacted provider payloads in the trace.
 - **Capabilities.** Declare them honestly; the registry uses them to refuse
   unsuitable dispatch.
 
