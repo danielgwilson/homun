@@ -65,6 +65,16 @@ automated secret and path scan found no matches, not that the artifact was
 certified free of PII or PHI. A first-class PII/PHI detector is on the roadmap
 ([#108](https://github.com/danielgwilson/mimetic-cli/issues/108)).
 
+`mimetic verify --json` also reports `shareSafety.status`:
+
+- `share_ready`: the verified bundle is eligible for public feedback drafts;
+- `local_only`: the bundle is valid local evidence, but should not be shared as-is
+  (for example, full-fidelity raw screenshots are present);
+- `blocked`: the bundle failed verification or public-safety gates.
+
+Feedback commands require `share_ready`. A valid local run can still be
+reviewed in Observer without being promoted into a public issue draft.
+
 ## How It Works
 
 ```text
@@ -194,7 +204,9 @@ as-is). Raw bundles stay local in gitignored `.mimetic/`; nothing scans the pixe
 so review them before sharing anywhere — a redact-on-export step is planned. The
 frame sent to the model is always full-resolution regardless. (Doctrine:
 `docs/principles/invariants-and-defaults.md` — redaction binds the publish boundary,
-not capture.)
+not capture.) `mimetic verify` reports raw-screenshot bundles as
+`shareSafety.status: local_only`; `mimetic feedback issue` refuses them until the
+run is share-ready.
 
 **Device presets.** `execution.desktop.device` picks the viewport the run renders at —
 `mobile` (414×896), `small-mobile` (360×740), `narrow-mobile` (320×700), `tablet`

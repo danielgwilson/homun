@@ -55,9 +55,11 @@ Implemented:
 - `commander` CLI with stable command help;
 - `init`, `doctor`, `run`, `watch`, `verify`, `review`, `runs`, and `feedback`;
 - synthetic run bundles;
-- public-safety verification;
+- public-safety verification with machine-readable `shareSafety.status`
+  (`share_ready`, `local_only`, or `blocked`);
 - mission-control Observer over UI, CLI, TUI, and Codex UI stream contracts;
-- public-safe feedback issue drafts without GitHub API mutation;
+- public-safe feedback issue drafts without GitHub API mutation, gated on
+  `share_ready` evidence;
 - skills.sh-compatible agent skill;
 - first-class lab manifest resolution through `mimetic/labs/*.yaml` and
   ignored `.mimetic/labs/*.yaml` overlays — `mimetic.lab.v2` compositions

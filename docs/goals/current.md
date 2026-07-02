@@ -265,6 +265,10 @@ Evidence hygiene and readback polish (0.12.16):
   serialize as `100`, and only true in-progress shared-world snapshots serialize partial progress.
   This keeps Observer status pills from rendering completed runs as low-percentage complete states.
   `done`
+- Verify results now separate valid local evidence from public-promotable evidence with
+  `shareSafety.status`. Raw full-fidelity screenshot runs remain valid local proof
+  (`local_only`), while feedback draft/issue commands require `share_ready` and fail
+  closed with structured reasons. `done`
 
 Attached CUA live Observer (next patch):
 

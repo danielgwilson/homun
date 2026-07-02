@@ -2295,6 +2295,8 @@ function formatVerifyHuman(result: VerifyResult): string {
   return [
     `mimetic verify ${result.ok ? "passed" : "failed"}`,
     `run: ${result.run}`,
+    `share-safety: ${result.shareSafety.status}`,
+    ...result.shareSafety.reasons.map((reason) => `share-safety reason: ${reason.code}: ${reason.message}`),
     ...result.checks.map((check) => `- ${check.ok ? "ok" : "fail"} ${check.name}: ${check.message}`),
     ...result.warnings.map((warning) => `warning: ${warning}`)
   ].join("\n") + "\n";

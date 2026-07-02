@@ -28,7 +28,9 @@ PHI, secrets, keys, tokens, raw private transcripts, private screenshots, raw
 customer data, raw patient data, or private product source.
 
 Public issue drafting fails closed if redaction cannot prove the payload is
-safe.
+safe. A verified run bundle is not automatically public-promotable: feedback
+commands also require `mimetic verify` to report
+`shareSafety.status: share_ready`.
 
 ## Command Stages
 
@@ -124,6 +126,7 @@ Generating a public issue draft is blocked when:
 - source bundle is missing;
 - evidence pointers are missing or invalid;
 - redaction did not pass;
+- `shareSafety.status` is `local_only` or `blocked`;
 - any payload may contain PII, PHI, secrets, or private operational context;
 - proposed next state is `agent_ready` without a readiness block;
 - the feedback is a dry-run-only product claim;

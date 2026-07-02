@@ -2,7 +2,7 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { loadRunBundle, verifyRun } from "./run.js";
-import type { RunBundle, RunFeedbackCandidate } from "./run.js";
+import type { RunBundle, RunFeedbackCandidate, VerifyResult } from "./run.js";
 
 export const FEEDBACK_SCHEMA = "mimetic.feedback.v1";
 export const FEEDBACK_RESULT_SCHEMA = "mimetic.feedback-result.v1";
@@ -45,8 +45,13 @@ export interface FeedbackResult {
   issueMarkdown?: string;
   issueUrl?: string;
   draft?: FeedbackDraft;
+  shareSafety?: VerifyResult["shareSafety"];
   error?: {
-    code: "MIMETIC_RUN_NOT_FOUND" | "MIMETIC_INVALID_RUN_BUNDLE" | "MIMETIC_INVALID_FEEDBACK_DRAFT";
+    code:
+      | "MIMETIC_RUN_NOT_FOUND"
+      | "MIMETIC_INVALID_RUN_BUNDLE"
+      | "MIMETIC_INVALID_FEEDBACK_DRAFT"
+      | "MIMETIC_FEEDBACK_SHARE_SAFETY_BLOCKED";
     message: string;
   };
 }
@@ -78,6 +83,20 @@ export async function draftFeedback(cwdInput: string, runInput: string): Promise
       error: {
         code: "MIMETIC_INVALID_RUN_BUNDLE",
         message: verified.error?.message ?? "Run bundle failed verification."
+      }
+    };
+  }
+
+  if (verified.shareSafety.status !== "share_ready") {
+    return {
+      schema: FEEDBACK_RESULT_SCHEMA,
+      ok: false,
+      cwd,
+      run: runInput,
+      shareSafety: verified.shareSafety,
+      error: {
+        code: "MIMETIC_FEEDBACK_SHARE_SAFETY_BLOCKED",
+        message: `Run is ${verified.shareSafety.status}, not share_ready: ${verified.shareSafety.reasons.map((reason) => reason.code).join(", ")}`
       }
     };
   }
