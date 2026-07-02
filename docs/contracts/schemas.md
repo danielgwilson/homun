@@ -823,6 +823,9 @@ checks:
   - name: redaction passed
     ok: true
     message: redaction status must be passed
+shareSafety:
+  status: share_ready
+  reasons: []
 ```
 
 ## Policy

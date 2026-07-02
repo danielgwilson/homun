@@ -302,6 +302,29 @@ path: ".mimetic/runs/<run-id>"
 
 The latest pointer may move. Run bundle directories should not.
 
+## Verify Result Share Safety
+
+`mimetic.verify-result.v1` includes a machine-readable `shareSafety` block in
+addition to `ok`, `checks[]`, and `warnings[]`:
+
+```yaml
+schema: mimetic.verify-result.v1
+ok: true
+shareSafety:
+  status: "share_ready|local_only|blocked"
+  reasons:
+    - code: "RAW_SCREENSHOTS"
+      message: "Full-fidelity screenshots are present ..."
+```
+
+`ok: true` means the bundle is valid evidence. It does not necessarily mean the
+bundle is safe to promote into a public issue. Public promotion should branch on
+`shareSafety.status`:
+
+- `share_ready`: feedback draft commands may render public issue payloads;
+- `local_only`: keep the run local or generate a redacted replacement bundle;
+- `blocked`: fix the verification or public-safety failure first.
+
 ## Contract Fixture Proof
 
 The core fixture proves:

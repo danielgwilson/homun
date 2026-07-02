@@ -745,6 +745,16 @@ export interface VerifyResult {
     ok: boolean;
     message: string;
   }>;
+  shareSafety: {
+    status: "share_ready" | "local_only" | "blocked";
+    reasons: Array<{
+      code:
+        | "VERIFY_FAILED"
+        | "PUBLIC_SAFETY_FINDINGS"
+        | "RAW_SCREENSHOTS";
+      message: string;
+    }>;
+  };
   // Advisory postures the operator must see (e.g. raw full-fidelity screenshots) that never
   // flip ok: overriding a default is supported, but ok: true must not read as "share-ready".
   warnings: string[];
@@ -3495,6 +3505,15 @@ export async function verifyRun(cwdInput: string, runInput: string): Promise<Ver
       cwd,
       run: runInput,
       checks,
+      shareSafety: {
+        status: "blocked",
+        reasons: [
+          {
+            code: "VERIFY_FAILED",
+            message: `Run not found: ${runInput}`
+          }
+        ]
+      },
       warnings: [],
       error: {
         code: "MIMETIC_RUN_NOT_FOUND",
@@ -3621,6 +3640,17 @@ export async function verifyRun(cwdInput: string, runInput: string): Promise<Ver
   const warnings = isRunBundle(bundle)
     ? [...rawScreenshotPostureWarnings(bundle), ...undeclaredSubjectStateWarnings(bundle)]
     : [];
+  const shareSafety = isRunBundle(bundle)
+    ? buildShareSafety({ ok, bundle, publicSafetyFindings })
+    : {
+        status: "blocked" as const,
+        reasons: [
+          {
+            code: "VERIFY_FAILED" as const,
+            message: "Run bundle failed verification."
+          }
+        ]
+      };
 
   return {
     schema: VERIFY_SCHEMA,
@@ -3629,6 +3659,7 @@ export async function verifyRun(cwdInput: string, runInput: string): Promise<Ver
     run: runInput,
     bundlePath: path.relative(cwd, bundlePath),
     checks,
+    shareSafety,
     warnings,
     ...(ok
       ? {}
@@ -4480,13 +4511,7 @@ function actorVerdictConsistencyFindings(bundle: RunBundle): string[] {
  * for the same reason as noEngagementActorFindings.
  */
 function rawScreenshotPostureWarnings(bundle: RunBundle): string[] {
-  const rawStreamIds: string[] = [];
-  for (const stream of bundle.streams) {
-    const trace: unknown = stream.actor;
-    if (isRecord(trace) && isRecord(trace.redaction) && trace.redaction.screenshots === "raw") {
-      rawStreamIds.push(stream.id);
-    }
-  }
+  const rawStreamIds = rawScreenshotStreamIds(bundle);
 
   if (rawStreamIds.length === 0) {
     return [];
@@ -4495,6 +4520,57 @@ function rawScreenshotPostureWarnings(bundle: RunBundle): string[] {
   return [
     `Screenshots are FULL-FIDELITY (raw) on ${rawStreamIds.join(", ")} — supported for local use, NOT publish-safe as-is. Verify ok does not mean share-ready; set policies.redactScreenshots: true to blur a share-as-is bundle.`
   ];
+}
+
+function rawScreenshotStreamIds(bundle: RunBundle): string[] {
+  const rawStreamIds: string[] = [];
+  for (const stream of bundle.streams) {
+    const trace: unknown = stream.actor;
+    if (isRecord(trace) && isRecord(trace.redaction) && trace.redaction.screenshots === "raw") {
+      rawStreamIds.push(stream.id);
+    }
+  }
+  return rawStreamIds;
+}
+
+function buildShareSafety(args: {
+  ok: boolean;
+  bundle: RunBundle;
+  publicSafetyFindings: string[];
+}): VerifyResult["shareSafety"] {
+  const reasons: VerifyResult["shareSafety"]["reasons"] = [];
+
+  if (!args.ok) {
+    reasons.push({
+      code: "VERIFY_FAILED",
+      message: "The run bundle is not valid enough to promote into public feedback."
+    });
+  }
+
+  if (args.publicSafetyFindings.length > 0) {
+    reasons.push({
+      code: "PUBLIC_SAFETY_FINDINGS",
+      message: "Text artifacts or public-proof paths matched known secret, token, local-path, browser-profile, or hosted-substrate URL patterns."
+    });
+  }
+
+  const rawStreamIds = rawScreenshotStreamIds(args.bundle);
+  if (rawStreamIds.length > 0) {
+    reasons.push({
+      code: "RAW_SCREENSHOTS",
+      message: `Full-fidelity screenshots are present on ${rawStreamIds.join(", ")}. This is valid local evidence, but not share-ready as-is.`
+    });
+  }
+
+  if (reasons.some((reason) => reason.code === "VERIFY_FAILED" || reason.code === "PUBLIC_SAFETY_FINDINGS")) {
+    return { status: "blocked", reasons };
+  }
+
+  if (reasons.length > 0) {
+    return { status: "local_only", reasons };
+  }
+
+  return { status: "share_ready", reasons: [] };
 }
 
 // The promptDigest convention: sha256 hex, first 16 chars. A "seeded" record without a real

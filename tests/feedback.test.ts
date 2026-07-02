@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { ACTOR_TRACE_SCHEMA } from "../src/actor-contract.js";
 import {
   FEEDBACK_SCHEMA,
   draftFeedback,
@@ -71,6 +72,54 @@ describe("feedback issue drafts", () => {
 
       const verified = await verifyFeedback(cwd, "latest");
       expect(verified.ok).toBe(true);
+    });
+  });
+
+  it("refuses public feedback drafts for valid local-only evidence", async () => {
+    await withFixtureCopy(async (cwd) => {
+      await runDryRun({
+        cwd,
+        dryRun: true,
+        runId: "feedback-local-only"
+      });
+
+      const runPath = path.join(cwd, ".mimetic/runs/feedback-local-only/run.json");
+      const bundle = JSON.parse(await readFile(runPath, "utf8")) as {
+        streams: Array<{ actor?: unknown }>;
+      };
+      bundle.streams[0]!.actor = {
+        schema: ACTOR_TRACE_SCHEMA,
+        redaction: {
+          status: "passed",
+          screenshots: "raw",
+          notes: "Synthetic raw screenshot posture fixture."
+        }
+      };
+      await writeFile(runPath, `${JSON.stringify(bundle, null, 2)}\n`, "utf8");
+
+      const drafted = await draftFeedback(cwd, "latest");
+      expect(drafted.ok).toBe(false);
+      expect(drafted.error?.code).toBe("MIMETIC_FEEDBACK_SHARE_SAFETY_BLOCKED");
+      expect(drafted.error?.message).toContain("local_only");
+      expect(drafted.error?.message).toContain("RAW_SCREENSHOTS");
+      expect(drafted.shareSafety?.status).toBe("local_only");
+      expect(drafted.shareSafety?.reasons.map((reason) => reason.code)).toContain("RAW_SCREENSHOTS");
+
+      const issue = await runCli([
+        "feedback",
+        "issue",
+        "--run",
+        "latest",
+        "--repo",
+        "example/app",
+        "--format",
+        "markdown",
+        "--cwd",
+        cwd
+      ]);
+      expect(issue.exitCode).toBe(2);
+      expect(issue.stdout).toBe("");
+      expect(issue.stderr).toContain("MIMETIC_FEEDBACK_SHARE_SAFETY_BLOCKED");
     });
   });
 

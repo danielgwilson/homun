@@ -217,6 +217,7 @@ describe("dry-run bundles", () => {
       const verify = await verifyRun(cwd, "latest");
       expect(verify.ok).toBe(true);
       expect(verify.checks.every((check) => check.ok)).toBe(true);
+      expect(verify.shareSafety).toEqual({ status: "share_ready", reasons: [] });
 
       const observer = await renderObserver(cwd, "latest");
       expect(observer.ok).toBe(true);
@@ -460,6 +461,8 @@ describe("dry-run bundles", () => {
 
       const verify = await verifyRun(cwd, "events-secret-regression");
       expect(verify.ok).toBe(false);
+      expect(verify.shareSafety.status).toBe("blocked");
+      expect(verify.shareSafety.reasons.map((reason) => reason.code)).toContain("PUBLIC_SAFETY_FINDINGS");
       expect(verify.checks.find((check) => check.name === "public-safety scan")?.message)
         .toContain("events.ndjson");
     });
@@ -2506,13 +2509,24 @@ describe("verify hardening (no-engagement + screenshot posture)", () => {
       expect(verify.warnings).toHaveLength(1);
       expect(verify.warnings[0]).toContain("FULL-FIDELITY (raw)");
       expect(verify.warnings[0]).toContain("NOT publish-safe");
+      expect(verify.shareSafety.status).toBe("local_only");
+      expect(verify.shareSafety.reasons.map((reason) => reason.code)).toContain("RAW_SCREENSHOTS");
+      expect(verify.shareSafety.reasons.find((reason) => reason.code === "RAW_SCREENSHOTS")?.message)
+        .toContain("Full-fidelity screenshots are present");
 
       // The CLI must show the posture in BOTH output modes.
       const json = await runCli(["verify", "--run", "raw-posture-live", "--cwd", cwd, "--json"]);
       expect(json.exitCode).toBe(0);
-      expect((JSON.parse(json.stdout) as { warnings: string[] }).warnings[0]).toContain("FULL-FIDELITY (raw)");
+      const jsonBody = JSON.parse(json.stdout) as {
+        shareSafety: { status: string; reasons: Array<{ code: string }> };
+        warnings: string[];
+      };
+      expect(jsonBody.shareSafety.status).toBe("local_only");
+      expect(jsonBody.shareSafety.reasons.map((reason) => reason.code)).toContain("RAW_SCREENSHOTS");
+      expect(jsonBody.warnings[0]).toContain("FULL-FIDELITY (raw)");
       const human = await runCli(["verify", "--run", "raw-posture-live", "--cwd", cwd]);
       expect(human.exitCode).toBe(0);
+      expect(human.stdout).toContain("share-safety: local_only");
       expect(human.stdout).toContain("warning: Screenshots are FULL-FIDELITY (raw)");
     });
   });
