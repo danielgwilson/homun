@@ -10,10 +10,13 @@ import { buildCuaBundle } from "../src/cua-actor-lab.js";
 import { renderObserver } from "../src/observer.js";
 import { createProgram } from "../src/program.js";
 import { startCodexAppServerUi } from "../src/codex-app-server-ui.js";
+import type { E2BDesktopModule } from "../src/e2b-desktop-launch.js";
 import {
+  CLEANUP_SCHEMA,
   PUBLIC_TARGET_CWD,
   RUN_BUNDLE_SCHEMA,
   buildRunSource,
+  cleanupRun,
   listRuns,
   readReview,
   runDryRun,
@@ -230,6 +233,132 @@ describe("dry-run bundles", () => {
       const runs = await listRuns(cwd);
       expect(runs.latest).toBe("dryrun-test");
       expect(runs.runs).toHaveLength(1);
+    });
+  });
+
+  it("cleans run-owned provider resources by exact recorded id", async () => {
+    await withFixtureCopy(async (cwd) => {
+      await runDryRun({
+        cwd,
+        dryRun: true,
+        runId: "cleanup-owned"
+      });
+
+      const bundlePath = path.join(cwd, ".mimetic/runs/cleanup-owned/run.json");
+      const bundle = JSON.parse(await readFile(bundlePath, "utf8")) as Record<string, unknown>;
+      bundle.providerResources = [
+        {
+          schema: "mimetic.provider-resource.v1",
+          provider: "e2b-desktop",
+          kind: "sandbox",
+          id: "sbx-owned-1",
+          owner: "mimetic",
+          status: "running",
+          simId: "sim-001",
+          streamId: "stream-001",
+          laneId: "lane-01",
+          createdAt: "2026-01-01T00:00:00.000Z"
+        }
+      ];
+      await writeFile(bundlePath, `${JSON.stringify(bundle, null, 2)}\n`, "utf8");
+
+      const killed: string[] = [];
+      const cleanup = await cleanupRun(cwd, "cleanup-owned", {
+        now: () => new Date("2026-01-01T00:01:00.000Z"),
+        loadDesktopModule: async () => ({
+          Sandbox: {
+            kill: async (sandboxId: string) => {
+              killed.push(sandboxId);
+            }
+          }
+        } as unknown as E2BDesktopModule)
+      });
+
+      expect(cleanup.schema).toBe(CLEANUP_SCHEMA);
+      expect(cleanup.ok).toBe(true);
+      expect(killed).toEqual(["sbx-owned-1"]);
+      expect(cleanup.summary).toMatchObject({ resources: 1, killed: 1, alreadyClean: 0, failed: 0, skipped: 0 });
+
+      const cleanupText = await readFile(path.join(cwd, ".mimetic/runs/cleanup-owned/cleanup.json"), "utf8");
+      expect(cleanupText).toContain("mimetic.cleanup-result.v1");
+
+      const verify = await verifyRun(cwd, "cleanup-owned");
+      expect(verify.ok).toBe(true);
+      expect(verify.checks.find((check) => check.name === "cleanup receipt")?.ok).toBe(true);
+    });
+  });
+
+  it("supports cleanup CLI for already-clean resources without loading a provider dependency", async () => {
+    await withFixtureCopy(async (cwd) => {
+      await runDryRun({
+        cwd,
+        dryRun: true,
+        runId: "cleanup-already-clean"
+      });
+
+      const bundlePath = path.join(cwd, ".mimetic/runs/cleanup-already-clean/run.json");
+      const bundle = JSON.parse(await readFile(bundlePath, "utf8")) as Record<string, unknown>;
+      bundle.providerResources = [
+        {
+          schema: "mimetic.provider-resource.v1",
+          provider: "e2b-desktop",
+          kind: "sandbox",
+          id: "sbx-already-clean",
+          owner: "mimetic",
+          status: "killed",
+          cleanup: {
+            killed: true,
+            reason: "killed during normal lane teardown"
+          }
+        }
+      ];
+      await writeFile(bundlePath, `${JSON.stringify(bundle, null, 2)}\n`, "utf8");
+
+      const cli = await runCli(["cleanup", "--cwd", cwd, "--run", "latest", "--json"]);
+      expect(cli.exitCode).toBe(0);
+      const result = JSON.parse(cli.stdout) as { ok: boolean; summary: { alreadyClean: number; killed: number } };
+      expect(result.ok).toBe(true);
+      expect(result.summary.alreadyClean).toBe(1);
+      expect(result.summary.killed).toBe(0);
+    });
+  });
+
+  it("fails verify when a cleanup receipt says cleanup failed", async () => {
+    await withFixtureCopy(async (cwd) => {
+      await runDryRun({
+        cwd,
+        dryRun: true,
+        runId: "cleanup-failed-receipt"
+      });
+
+      await writeFile(
+        path.join(cwd, ".mimetic/runs/cleanup-failed-receipt/cleanup.json"),
+        `${JSON.stringify({
+          schema: CLEANUP_SCHEMA,
+          ok: false,
+          cwd: PUBLIC_TARGET_CWD,
+          run: "cleanup-failed-receipt",
+          runId: "cleanup-failed-receipt",
+          checkedAt: "2026-01-01T00:02:00.000Z",
+          summary: { resources: 1, killed: 0, alreadyClean: 0, failed: 1, skipped: 0 },
+          resources: [
+            {
+              provider: "e2b-desktop",
+              kind: "sandbox",
+              id: "sbx-failed",
+              status: "failed",
+              message: "synthetic failure"
+            }
+          ],
+          adapterResults: [],
+          warnings: []
+        }, null, 2)}\n`,
+        "utf8"
+      );
+
+      const verify = await verifyRun(cwd, "cleanup-failed-receipt");
+      expect(verify.ok).toBe(false);
+      expect(verify.checks.find((check) => check.name === "cleanup receipt")?.ok).toBe(false);
     });
   });
 

@@ -96,6 +96,7 @@ import {
   type RunSimulation,
   type RunSimulationStatus,
   type RunStream,
+  type RunProviderResource,
   type RunSubjectProvenance,
   type RunSubjectStateStepRecord
 } from "./run.js";
@@ -2170,6 +2171,13 @@ function buildSingleLaneBundle(args: {
     ...(args.subjectProvenance === undefined ? {} : { subjectProvenance: args.subjectProvenance }),
     ...(config.execution?.desktop?.template === undefined ? {} : { desktopTemplate: config.execution.desktop.template }),
     ...(outcome?.desktopBrowser === undefined ? {} : { desktopBrowser: outcome.desktopBrowser }),
+    providerResources: providerResourcesForOutcome({
+      outcome,
+      createdAt: args.createdAt,
+      simId: spec.simId,
+      streamId: spec.streamId,
+      laneId: spec.laneId
+    }),
     ...(args.localAppSubject || args.inProcessRoute ? { entryKind: "local-app" as const } : {}),
     ...(outcome?.session ? { traceArtifactPath: spec.traceArtifactPath } : {})
   });
@@ -2467,6 +2475,7 @@ export function buildCuaBundle(args: {
   /** The configured browser choice and the command that opened, when explicitly configured. */
   desktopBrowser?: DesktopBrowserEvidence;
   traceArtifactPath?: string;
+  providerResources?: RunProviderResource[];
   inProgress?: boolean;
 }): RunBundle {
   const publicAppUrl = publicSafeAppUrlLabel(args.appUrl);
@@ -2713,6 +2722,7 @@ export function buildCuaBundle(args: {
     // Custom desktop image provenance (omitted on the stock-template default → byte-stable).
     ...(args.desktopTemplate === undefined ? {} : { desktopTemplate: args.desktopTemplate }),
     ...(args.desktopBrowser === undefined ? {} : { desktopBrowser: args.desktopBrowser }),
+    ...(args.providerResources === undefined || args.providerResources.length === 0 ? {} : { providerResources: args.providerResources }),
     // Structured subject provenance (invariant 5): code pin + state story. Uniform and
     // honest on app-url bundles too — the caller minted the URL, its state is the caller's.
     subject: args.subjectProvenance
@@ -3030,6 +3040,14 @@ export function buildCuaFanoutBundle(args: {
   const unanimousResolvedBrowser = resolvedBrowsers.length > 0 && new Set(resolvedBrowsers).size === 1
     ? resolvedBrowsers[0]
     : undefined;
+  const providerResources = (outcomes ?? []).flatMap((outcome) =>
+    providerResourcesForOutcome({
+      outcome,
+      createdAt: args.createdAt,
+      simId: outcome.spec.simId,
+      streamId: outcome.spec.streamId,
+      laneId: outcome.spec.laneId
+    }));
 
   return {
     schema: RUN_BUNDLE_SCHEMA,
@@ -3086,8 +3104,40 @@ export function buildCuaFanoutBundle(args: {
     ...(configuredBrowser === undefined
       ? {}
       : { desktopBrowser: { requested: configuredBrowser, ...(unanimousResolvedBrowser === undefined ? {} : { resolved: unanimousResolvedBrowser }) } }),
+    ...(providerResources.length === 0 ? {} : { providerResources }),
     subject: args.aggregateSubject
   };
+}
+
+function providerResourcesForOutcome(args: {
+  outcome: LaneRunOutcome | undefined;
+  createdAt: string;
+  simId: string;
+  streamId: string;
+  laneId: string;
+}): RunProviderResource[] {
+  if (args.outcome?.sandboxId === undefined) {
+    return [];
+  }
+
+  return [{
+    schema: "mimetic.provider-resource.v1",
+    provider: "e2b-desktop",
+    kind: "sandbox",
+    id: args.outcome.sandboxId,
+    owner: "mimetic",
+    status: args.outcome.killed ? "killed" : "running",
+    simId: args.simId,
+    streamId: args.streamId,
+    laneId: args.laneId,
+    createdAt: args.createdAt,
+    cleanup: {
+      killed: args.outcome.killed,
+      reason: args.outcome.killed
+        ? "killed during normal lane teardown"
+        : "not killed during normal lane teardown; cleanup may reclaim by exact recorded id"
+    }
+  }];
 }
 
 function verdictForStatus(status: ActorStatus): ReviewSummary["verdict"] {

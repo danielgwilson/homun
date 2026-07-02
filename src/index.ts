@@ -111,11 +111,13 @@ export {
 } from "./oss-lab.js";
 export type { OssLabOptions, OssLabRepoResult, OssLabResult, OssLabStep } from "./oss-lab.js";
 export {
+  CLEANUP_SCHEMA,
   DOCTOR_SCHEMA,
   REVIEW_SCHEMA,
   RUNS_SCHEMA,
   RUN_BUNDLE_SCHEMA,
   VERIFY_SCHEMA,
+  cleanupRun,
   doctor,
   extractLocalActorVerdict,
   listRuns,
@@ -126,6 +128,9 @@ export {
 } from "./run.js";
 export { SHARED_WORLD_SCHEMA } from "./run.js";
 export type {
+  CleanupAdapterResult,
+  CleanupResourceResult,
+  CleanupResult,
   DoctorResult,
   ReviewSummary,
   RunAdapterArtifact,
@@ -136,7 +141,9 @@ export type {
   RunFeedbackCandidate,
   RunMeaningfulUseComponentId,
   RunMeaningfulUseScore,
+  RunCleanupHooks,
   RunOptions,
+  RunProviderResource,
   RunResult,
   RunSimulation,
   RunStream,
