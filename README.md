@@ -120,6 +120,7 @@ npx mimetic watch --json --no-open
 | `mimetic lab inspect <lab>` | Show the source manifest for a lab without running it. |
 | `mimetic lab run <lab>` | Run a lab manifest in human or JSON mode. |
 | `mimetic verify` | Validate a run bundle and public-safety gates. |
+| `mimetic cleanup` | Clean resources explicitly recorded as owned by a run and write `cleanup.json`. |
 | `mimetic review` | Read review evidence for a run. |
 | `mimetic runs` | List local runs and latest pointers. |
 | `mimetic feedback issue` | Print a public-safe GitHub issue draft without API mutation. |
@@ -271,6 +272,17 @@ This creates a new linked run containing only the failed/blocked/timed-out/hollo
 selected lane ids, and previous lane statuses; the source run's verdict is left unchanged.
 This is intentionally not automatic retry; a passing rerun is evidence of a
 nondeterminism candidate, not permission to erase the original red lane.
+
+**Run-owned cleanup.** Live providers can record exact owned resources in `run.json`.
+After a run, reclaim only those resources and write a durable receipt:
+
+```bash
+npx mimetic cleanup --run latest
+npx mimetic verify --run latest
+```
+
+Cleanup is exact-id only; Mimetic does not enumerate or bulk-delete provider
+accounts from this command.
 
 Trust note: `serve` commands run inside the disposable sandbox with the declared
 subject env provisioned — the same trust class as a repo's package.json scripts.

@@ -52,6 +52,7 @@ import {
 } from "./oss-meta-lab.js";
 import type { OssMetaLabResult } from "./oss-meta-lab.js";
 import {
+  cleanupRun,
   doctor,
   listRuns,
   readReview,
@@ -60,6 +61,7 @@ import {
 } from "./run.js";
 import type {
   DoctorResult,
+  CleanupResult,
   RunsResult,
   RunResult,
   VerifyResult
@@ -273,6 +275,7 @@ export function createProgram(io: Partial<CliIo> = {}): Command {
   registerDoctorCommand(program, cliIo);
   registerRunCommand(program, cliIo);
   registerVerifyCommand(program, cliIo);
+  registerCleanupCommand(program, cliIo);
   registerReviewCommand(program, cliIo);
   registerRunsCommand(program, cliIo);
   registerWatchCommand(program, cliIo);
@@ -280,7 +283,7 @@ export function createProgram(io: Partial<CliIo> = {}): Command {
   registerCodexCommands(program, cliIo);
   registerLabCommands(program, cliIo);
 
-  const implementedCommands = new Set(["init", "doctor", "run", "verify", "review", "runs", "watch", "codex", "lab"]);
+  const implementedCommands = new Set(["init", "doctor", "run", "verify", "cleanup", "review", "runs", "watch", "codex", "lab"]);
   for (const plannedCommand of plannedCommands.filter((command) => !implementedCommands.has(command.name))) {
     registerUnsupportedCommand(program, plannedCommand, cliIo);
   }
@@ -454,6 +457,20 @@ function registerVerifyCommand(parent: Command, io: CliIo): void {
     .action(async (options: { cwd: string; json?: boolean; run: string }, command) => {
       const result = await verifyRun(options.cwd, options.run);
       writeResult(command, io, result, formatVerifyHuman);
+      io.setExitCode(result.ok ? 0 : 2);
+    });
+}
+
+function registerCleanupCommand(parent: Command, io: CliIo): void {
+  parent
+    .command("cleanup")
+    .description("Clean run-owned provider resources by exact recorded id and write a cleanup receipt.")
+    .option("--run <id>", "Run id or latest pointer.", "latest")
+    .option("--cwd <path>", "Target project directory.", ".")
+    .option("--json", "Print a machine-readable JSON response.")
+    .action(async (options: { cwd: string; json?: boolean; run: string }, command) => {
+      const result = await cleanupRun(options.cwd, options.run);
+      writeResult(command, io, result, formatCleanupHuman);
       io.setExitCode(result.ok ? 0 : 2);
     });
 }
@@ -2298,6 +2315,20 @@ function formatVerifyHuman(result: VerifyResult): string {
     `share-safety: ${result.shareSafety.status}`,
     ...result.shareSafety.reasons.map((reason) => `share-safety reason: ${reason.code}: ${reason.message}`),
     ...result.checks.map((check) => `- ${check.ok ? "ok" : "fail"} ${check.name}: ${check.message}`),
+    ...result.warnings.map((warning) => `warning: ${warning}`)
+  ].join("\n") + "\n";
+}
+
+function formatCleanupHuman(result: CleanupResult): string {
+  if (!result.ok && result.error) {
+    return `${result.error.code}: ${result.error.message}\n`;
+  }
+
+  return [
+    `mimetic cleanup ${result.ok ? "passed" : "failed"}`,
+    `run: ${result.runId ?? result.run}`,
+    `resources: killed ${result.summary.killed}, already-clean ${result.summary.alreadyClean}, skipped ${result.summary.skipped}, failed ${result.summary.failed}`,
+    ...(result.cleanupPath ? [`cleanup: ${result.cleanupPath}`] : []),
     ...result.warnings.map((warning) => `warning: ${warning}`)
   ].join("\n") + "\n";
 }

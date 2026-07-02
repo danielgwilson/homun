@@ -33,6 +33,7 @@ import { screenshotEvidenceError } from "./image-evidence.js";
 import { buildObserverData } from "./observer-data.js";
 import { parseResolvedPersona, personaToDirectives, renderPersonaPromptSection, type ResolvedPersona } from "./persona.js";
 import { containsSensitive, digestText, redactToSecretLabel } from "./redaction.js";
+import { loadE2BDesktopModule, type E2BDesktopModule } from "./e2b-desktop-launch.js";
 
 export const RUN_BUNDLE_SCHEMA = "mimetic.run-bundle.v1";
 export const SHARED_WORLD_SCHEMA = "mimetic.shared-world.v1";
@@ -40,6 +41,7 @@ export const REVIEW_SCHEMA = "mimetic.review.v1";
 export const VERIFY_SCHEMA = "mimetic.verify-result.v1";
 export const RUNS_SCHEMA = "mimetic.runs-result.v1";
 export const DOCTOR_SCHEMA = "mimetic.doctor-result.v1";
+export const CLEANUP_SCHEMA = "mimetic.cleanup-result.v1";
 export const PUBLIC_TARGET_CWD = "[target-cwd]";
 const SAFE_GIT_NOTES = new Set([
   "Git command could not be started.",
@@ -664,6 +666,29 @@ export interface RunBundle {
    * files exist. The adapter owns the payload schema under `namespace`.
    */
   adapterArtifacts?: RunAdapterArtifact[];
+  /**
+   * Provider resources this run owns and may clean up later by exact recorded id.
+   * Optional + additive: absent means the producer did not record any run-owned
+   * remote resources. Core cleanup never enumerates provider accounts.
+   */
+  providerResources?: RunProviderResource[];
+}
+
+export interface RunProviderResource {
+  schema: "mimetic.provider-resource.v1";
+  provider: "e2b-desktop";
+  kind: "sandbox";
+  id: string;
+  owner: "mimetic";
+  status: "running" | "killed" | "unknown";
+  simId?: string;
+  streamId?: string;
+  laneId?: string;
+  createdAt?: string;
+  cleanup?: {
+    killed: boolean;
+    reason: string;
+  };
 }
 
 export interface RunRerunLineage {
@@ -762,6 +787,55 @@ export interface VerifyResult {
     code: "MIMETIC_RUN_NOT_FOUND" | "MIMETIC_INVALID_RUN_BUNDLE";
     message: string;
   };
+}
+
+export interface CleanupResourceResult {
+  provider: RunProviderResource["provider"];
+  kind: RunProviderResource["kind"];
+  id: string;
+  status: "killed" | "already_clean" | "failed" | "skipped";
+  message: string;
+}
+
+export interface CleanupAdapterResult {
+  id: string;
+  ok: boolean;
+  message: string;
+}
+
+export interface CleanupResult {
+  schema: typeof CLEANUP_SCHEMA;
+  ok: boolean;
+  cwd: string;
+  run: string;
+  runId?: string;
+  bundlePath?: string;
+  cleanupPath?: string;
+  checkedAt: string;
+  summary: {
+    resources: number;
+    killed: number;
+    alreadyClean: number;
+    failed: number;
+    skipped: number;
+  };
+  resources: CleanupResourceResult[];
+  adapterResults: CleanupAdapterResult[];
+  warnings: string[];
+  error?: {
+    code: "MIMETIC_RUN_NOT_FOUND" | "MIMETIC_INVALID_RUN_BUNDLE";
+    message: string;
+  };
+}
+
+export interface RunCleanupHooks {
+  loadDesktopModule?: () => Promise<E2BDesktopModule>;
+  cleanupAdapterResources?: (ctx: {
+    cwd: string;
+    runDir: string;
+    bundle: RunBundle;
+  }) => Promise<CleanupAdapterResult[]>;
+  now?: () => Date;
 }
 
 export interface RunsResult {
@@ -3524,6 +3598,7 @@ export async function verifyRun(cwdInput: string, runInput: string): Promise<Ver
 
   const bundlePath = path.join(resolved, "run.json");
   const bundle = await readJsonIfExists(bundlePath);
+  const cleanupJson = await readJsonIfExists(path.join(resolved, "cleanup.json"));
   const reviewJson = await readJsonIfExists(path.join(resolved, "review.json"));
   const reviewMarkdown = await readTextIfExists(path.join(resolved, "review.md"));
 
@@ -3627,6 +3702,15 @@ export async function verifyRun(cwdInput: string, runInput: string): Promise<Ver
       ? "live shared-world runs either are absent or carry a well-formed alternating timeline (cp-baseline → turn → cp), single-plane provenance, digest-only checkpoints, the mandatory attributionLimits, and a checkpoint delta on a passed run"
       : `shared-world findings: ${sharedWorldFindings.join(", ")}`
   });
+  checks.push({
+    name: "cleanup receipt",
+    ok: cleanupJson === null || (isCleanupResult(cleanupJson) && cleanupJson.ok),
+    message: cleanupJson === null
+      ? "cleanup receipt not present; cleanup was not requested"
+      : isCleanupResult(cleanupJson) && cleanupJson.ok
+        ? "cleanup receipt is present and successful"
+        : "cleanup receipt is present but malformed or failed"
+  });
   const rerunFindings = isRunBundle(bundle) ? rerunLineageFindings(bundle) : [];
   checks.push({
     name: "rerun lineage",
@@ -3670,6 +3754,155 @@ export async function verifyRun(cwdInput: string, runInput: string): Promise<Ver
           }
         })
   };
+}
+
+export async function cleanupRun(cwdInput: string, runInput: string, hooks: RunCleanupHooks = {}): Promise<CleanupResult> {
+  const cwd = path.resolve(cwdInput);
+  const checkedAt = (hooks.now ?? (() => new Date()))().toISOString();
+  const resolved = await resolveRunPath(cwd, runInput);
+
+  if (!resolved) {
+    return {
+      schema: CLEANUP_SCHEMA,
+      ok: false,
+      cwd,
+      run: runInput,
+      checkedAt,
+      summary: { resources: 0, killed: 0, alreadyClean: 0, failed: 0, skipped: 0 },
+      resources: [],
+      adapterResults: [],
+      warnings: [],
+      error: {
+        code: "MIMETIC_RUN_NOT_FOUND",
+        message: `Run not found: ${runInput}`
+      }
+    };
+  }
+
+  const bundlePath = path.join(resolved, "run.json");
+  const cleanupPath = path.join(resolved, "cleanup.json");
+  const bundle = await readJsonIfExists(bundlePath);
+
+  if (!isRunBundle(bundle)) {
+    return {
+      schema: CLEANUP_SCHEMA,
+      ok: false,
+      cwd,
+      run: runInput,
+      bundlePath: path.relative(cwd, bundlePath),
+      checkedAt,
+      summary: { resources: 0, killed: 0, alreadyClean: 0, failed: 0, skipped: 0 },
+      resources: [],
+      adapterResults: [],
+      warnings: [],
+      error: {
+        code: "MIMETIC_INVALID_RUN_BUNDLE",
+        message: "Run bundle failed cleanup shape validation."
+      }
+    };
+  }
+
+  const resources: CleanupResourceResult[] = [];
+  const warnings: string[] = [];
+  let desktopModule: E2BDesktopModule | null = null;
+  const providerResources = bundle.providerResources ?? [];
+
+  for (const resource of providerResources) {
+    if (resource.provider !== "e2b-desktop" || resource.kind !== "sandbox") {
+      resources.push({
+        provider: resource.provider,
+        kind: resource.kind,
+        id: resource.id,
+        status: "skipped",
+        message: "cleanup only supports e2b-desktop sandbox resources"
+      });
+      continue;
+    }
+
+    if (resource.status === "killed" || resource.cleanup?.killed === true) {
+      resources.push({
+        provider: resource.provider,
+        kind: resource.kind,
+        id: resource.id,
+        status: "already_clean",
+        message: "resource was already recorded as killed"
+      });
+      continue;
+    }
+
+    try {
+      desktopModule ??= await (hooks.loadDesktopModule ?? loadE2BDesktopModule)();
+      if (typeof desktopModule.Sandbox.kill !== "function") {
+        resources.push({
+          provider: resource.provider,
+          kind: resource.kind,
+          id: resource.id,
+          status: "failed",
+          message: "installed @e2b/desktop SDK does not expose Sandbox.kill"
+        });
+        continue;
+      }
+
+      await desktopModule.Sandbox.kill(resource.id, { requestTimeoutMs: 60_000 });
+      resources.push({
+        provider: resource.provider,
+        kind: resource.kind,
+        id: resource.id,
+        status: "killed",
+        message: "resource killed by exact recorded id"
+      });
+    } catch (error) {
+      resources.push({
+        provider: resource.provider,
+        kind: resource.kind,
+        id: resource.id,
+        status: "failed",
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  let adapterResults: CleanupAdapterResult[] = [];
+  if (hooks.cleanupAdapterResources) {
+    try {
+      adapterResults = await hooks.cleanupAdapterResources({ cwd, runDir: resolved, bundle });
+    } catch (error) {
+      adapterResults = [{
+        id: "adapter-cleanup",
+        ok: false,
+        message: error instanceof Error ? error.message : String(error)
+      }];
+    }
+  }
+
+  if (providerResources.length === 0 && adapterResults.length === 0) {
+    warnings.push("Run bundle recorded no run-owned provider resources; nothing to clean.");
+  }
+
+  const summary = {
+    resources: resources.length,
+    killed: resources.filter((resource) => resource.status === "killed").length,
+    alreadyClean: resources.filter((resource) => resource.status === "already_clean").length,
+    failed: resources.filter((resource) => resource.status === "failed").length + adapterResults.filter((result) => !result.ok).length,
+    skipped: resources.filter((resource) => resource.status === "skipped").length
+  };
+  const ok = summary.failed === 0;
+  const result: CleanupResult = {
+    schema: CLEANUP_SCHEMA,
+    ok,
+    cwd: PUBLIC_TARGET_CWD,
+    run: runInput,
+    runId: bundle.runId,
+    bundlePath: path.relative(cwd, bundlePath),
+    cleanupPath: path.relative(cwd, cleanupPath),
+    checkedAt,
+    summary,
+    resources,
+    adapterResults,
+    warnings
+  };
+  await writeJson(cleanupPath, result);
+  return result;
 }
 
 export async function loadRunBundle(
@@ -5264,7 +5497,70 @@ function isRunBundle(value: unknown): value is RunBundle {
     // its SHAPE; core never reads the adapter's `data` payload.
     && (value.adapterScore === undefined || isRunAdapterScore(value.adapterScore))
     && (value.adapterArtifacts === undefined
-      || (Array.isArray(value.adapterArtifacts) && value.adapterArtifacts.every(isRunAdapterArtifact)));
+      || (Array.isArray(value.adapterArtifacts) && value.adapterArtifacts.every(isRunAdapterArtifact)))
+    && (value.providerResources === undefined
+      || (Array.isArray(value.providerResources) && value.providerResources.every(isRunProviderResource)));
+}
+
+function isRunProviderResource(value: unknown): value is RunProviderResource {
+  return isRecord(value)
+    && value.schema === "mimetic.provider-resource.v1"
+    && value.provider === "e2b-desktop"
+    && value.kind === "sandbox"
+    && typeof value.id === "string"
+    && value.id.trim().length > 0
+    && value.owner === "mimetic"
+    && (value.status === "running" || value.status === "killed" || value.status === "unknown")
+    && (value.simId === undefined || typeof value.simId === "string")
+    && (value.streamId === undefined || typeof value.streamId === "string")
+    && (value.laneId === undefined || typeof value.laneId === "string")
+    && (value.createdAt === undefined || typeof value.createdAt === "string")
+    && (value.cleanup === undefined
+      || (isRecord(value.cleanup)
+        && typeof value.cleanup.killed === "boolean"
+        && typeof value.cleanup.reason === "string"));
+}
+
+function isCleanupResult(value: unknown): value is CleanupResult {
+  return isRecord(value)
+    && value.schema === CLEANUP_SCHEMA
+    && typeof value.ok === "boolean"
+    && typeof value.cwd === "string"
+    && typeof value.run === "string"
+    && typeof value.checkedAt === "string"
+    && (value.runId === undefined || typeof value.runId === "string")
+    && (value.bundlePath === undefined || typeof value.bundlePath === "string")
+    && (value.cleanupPath === undefined || typeof value.cleanupPath === "string")
+    && isRecord(value.summary)
+    && isNonNegativeSafeInteger(value.summary.resources)
+    && isNonNegativeSafeInteger(value.summary.killed)
+    && isNonNegativeSafeInteger(value.summary.alreadyClean)
+    && isNonNegativeSafeInteger(value.summary.failed)
+    && isNonNegativeSafeInteger(value.summary.skipped)
+    && Array.isArray(value.resources)
+    && value.resources.every(isCleanupResourceResult)
+    && Array.isArray(value.adapterResults)
+    && value.adapterResults.every(isCleanupAdapterResult)
+    && Array.isArray(value.warnings)
+    && value.warnings.every((warning) => typeof warning === "string");
+}
+
+function isCleanupResourceResult(value: unknown): value is CleanupResourceResult {
+  return isRecord(value)
+    && value.provider === "e2b-desktop"
+    && value.kind === "sandbox"
+    && typeof value.id === "string"
+    && value.id.trim().length > 0
+    && (value.status === "killed" || value.status === "already_clean" || value.status === "failed" || value.status === "skipped")
+    && typeof value.message === "string";
+}
+
+function isCleanupAdapterResult(value: unknown): value is CleanupAdapterResult {
+  return isRecord(value)
+    && typeof value.id === "string"
+    && value.id.trim().length > 0
+    && typeof value.ok === "boolean"
+    && typeof value.message === "string";
 }
 
 function isRunRerunLineage(value: unknown): value is RunRerunLineage {
