@@ -118,22 +118,96 @@ function tailOf(value: string | undefined): string {
   return (value ?? "").trim().replace(/\s+/g, " ").slice(-240);
 }
 
-async function pasteTextViaClipboard(desktop: E2BDesktopLike, text: string): Promise<boolean> {
-  if (!desktop.files || !desktop.commands) return false;
+/**
+ * The stage of the type -> clipboard-paste fallback chain that failed. Public-safe
+ * (a path label, never typed text). Surfaced so a run bundle can tell app focus
+ * from a missing clipboard utility from a failed paste keypress.
+ */
+export type CuaTypeFallbackPhase =
+  | "clipboard-unavailable"
+  | "clipboard-tempfile"
+  | "clipboard-utility-missing"
+  | "clipboard-command"
+  | "paste-keypress";
+
+/**
+ * A `type` action that failed after both the primary write and the clipboard
+ * paste fallback. Carries a redacted attempt chain (path labels only, never the
+ * typed text), the failing phase, and a sanitized stderr/stdout tail when the
+ * substrate produced one. The loop records `.name` + `.message` into the actor
+ * trace notice, so the bundle proves WHERE the type stopped, not just that it did.
+ */
+export class CuaTypeFallbackError extends Error {
+  readonly phase: CuaTypeFallbackPhase;
+  readonly attemptChain: readonly string[];
+  readonly stderrTail?: string;
+
+  constructor(
+    phase: CuaTypeFallbackPhase,
+    attemptChain: readonly string[],
+    stderrTail?: string,
+    cause?: unknown,
+  ) {
+    const chain = attemptChain.join(" -> ");
+    const suffix = stderrTail !== undefined && stderrTail.length > 0 ? ` (stderr: ${stderrTail})` : "";
+    super(`type fallback failed at ${phase}: ${chain}${suffix}`);
+    this.name = "CuaTypeFallbackError";
+    this.phase = phase;
+    this.attemptChain = attemptChain;
+    if (stderrTail !== undefined && stderrTail.length > 0) this.stderrTail = stderrTail;
+    if (cause !== undefined) (this as { cause?: unknown }).cause = cause;
+  }
+}
+
+/**
+ * Best-effort clipboard-paste fallback for a `type` action after the primary
+ * `desktop.write` failed. Records each attempt into `attemptChain` (path labels
+ * only) and throws a CuaTypeFallbackError naming the failing phase + a sanitized
+ * stderr tail when the chain cannot complete. The typed text is transferred via a
+ * temp file (never shell-quoted) and is never included in the chain or error.
+ */
+async function pasteTextViaClipboard(
+  desktop: E2BDesktopLike,
+  text: string,
+  attemptChain: string[],
+): Promise<void> {
+  const files = desktop.files;
+  const commands = desktop.commands;
+  if (!files || !commands) {
+    throw new CuaTypeFallbackError("clipboard-unavailable", [
+      ...attemptChain,
+      "clipboard fallback unavailable (no command/file surface)",
+    ]);
+  }
 
   const path = `/tmp/homun-cua-type-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`;
-  await desktop.files.write(path, text, { requestTimeoutMs: TYPE_FALLBACK_TIMEOUT_MS });
+  try {
+    await files.write(path, text, { requestTimeoutMs: TYPE_FALLBACK_TIMEOUT_MS });
+  } catch (writeError) {
+    throw new CuaTypeFallbackError(
+      "clipboard-tempfile",
+      [...attemptChain, "clipboard temp-file write failed"],
+      undefined,
+      writeError,
+    );
+  }
 
-  const result = await desktop.commands.run([
+  const result = await commands.run([
     "set -euo pipefail",
     "export DISPLAY=\"${DISPLAY:-:0}\"",
     `text_path=${shellSingleQuote(path)}`,
     "cleanup() { rm -f \"$text_path\"; }",
     "trap cleanup EXIT",
-    "if command -v xclip >/dev/null 2>&1; then",
-    "  xclip -selection clipboard < \"$text_path\"",
-    "elif command -v xsel >/dev/null 2>&1; then",
-    "  xsel --clipboard --input < \"$text_path\"",
+    // Try xclip, then fall back to xsel if xclip is absent OR fails; distinguish a
+    // missing utility (exit 127) from a utility that ran but failed (exit 1) so the
+    // caller can name the phase.
+    "if command -v xclip >/dev/null 2>&1 && xclip -selection clipboard < \"$text_path\"; then",
+    "  :",
+    "elif command -v xsel >/dev/null 2>&1 && xsel --clipboard --input < \"$text_path\"; then",
+    "  :",
+    "elif command -v xclip >/dev/null 2>&1 || command -v xsel >/dev/null 2>&1; then",
+    "  echo 'clipboard utility present but failed to set the clipboard' >&2",
+    "  exit 1",
     "else",
     "  echo 'no xclip/xsel clipboard utility available for paste fallback' >&2",
     "  exit 127",
@@ -143,12 +217,33 @@ async function pasteTextViaClipboard(desktop: E2BDesktopLike, text: string): Pro
     timeoutMs: TYPE_FALLBACK_TIMEOUT_MS
   });
 
-  if (result.exitCode !== undefined && result.exitCode !== 0) {
-    throw new Error(`clipboard paste fallback failed with exit ${result.exitCode}: ${tailOf(result.stderr ?? result.stdout)}`);
+  const stderrTail = tailOf(result.stderr ?? result.stdout);
+  if (result.exitCode === 127) {
+    throw new CuaTypeFallbackError(
+      "clipboard-utility-missing",
+      [...attemptChain, "no xclip/xsel clipboard utility"],
+      stderrTail,
+    );
   }
+  if (result.exitCode !== undefined && result.exitCode !== 0) {
+    throw new CuaTypeFallbackError(
+      "clipboard-command",
+      [...attemptChain, `clipboard command failed (exit ${result.exitCode})`],
+      stderrTail,
+    );
+  }
+  attemptChain.push("clipboard write ok");
 
-  await desktop.press(["Control", "v"]);
-  return true;
+  try {
+    await desktop.press(["Control", "v"]);
+  } catch (pressError) {
+    throw new CuaTypeFallbackError(
+      "paste-keypress",
+      [...attemptChain, "paste keypress (Control+V) failed"],
+      undefined,
+      pressError,
+    );
+  }
 }
 
 /**
@@ -213,14 +308,21 @@ export function createE2BDesktopExecutor(
           await desktop.scroll(direction, amount);
           return;
         }
-        case "type":
+        case "type": {
+          const attemptChain: string[] = [];
           try {
             await desktop.write(action.text);
-          } catch (error) {
-            if (await pasteTextViaClipboard(desktop, action.text)) return;
-            throw error;
+            return;
+          } catch {
+            // The primary write failed; record the path and try the clipboard
+            // fallback, which throws a CuaTypeFallbackError naming the phase if it
+            // also fails. (The write error carries no diagnostics beyond "it
+            // threw"; the typed text is never recorded.)
+            attemptChain.push("desktop.write failed");
           }
+          await pasteTextViaClipboard(desktop, action.text, attemptChain);
           return;
+        }
         case "keypress":
           // The SDK press() accepts a string[] directly; pass the keys through so
           // a chord (e.g. ["Control", "a"]) is pressed together, not in sequence.
