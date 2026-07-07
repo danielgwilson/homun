@@ -159,6 +159,58 @@ export class CuaTypeFallbackError extends Error {
   }
 }
 
+type DesktopCommandResult = { exitCode?: number; stderr?: string; stdout?: string };
+
+/**
+ * Recover the exit code + a sanitized stderr/stdout tail from a command failure.
+ * The real @e2b/desktop Sandbox throws CommandExitError (exposing exitCode,
+ * stderr, stdout, error) on a non-zero exit, so this reads those fields
+ * structurally rather than importing the SDK error class. Only the substrate's
+ * own output is read; the typed text never passes through here.
+ */
+function commandFailureDetail(error: unknown): { exitCode?: number; stderrTail: string } {
+  const e = (error ?? {}) as {
+    exitCode?: unknown;
+    stderr?: unknown;
+    stdout?: unknown;
+    error?: unknown;
+    message?: unknown;
+  };
+  const exitCode = typeof e.exitCode === "number" ? e.exitCode : undefined;
+  const str = (value: unknown): string | undefined =>
+    typeof value === "string" && value.length > 0 ? value : undefined;
+  const source = str(e.stderr) ?? str(e.stdout) ?? str(e.error) ?? str(e.message);
+  return exitCode === undefined
+    ? { stderrTail: tailOf(source) }
+    : { exitCode, stderrTail: tailOf(source) };
+}
+
+/** Map a clipboard-command exit code to a CuaTypeFallbackError phase and throw. */
+function throwClipboardCommandFailure(
+  exitCode: number | undefined,
+  stderrTail: string,
+  attemptChain: string[],
+  cause?: unknown,
+): never {
+  if (exitCode === 127) {
+    throw new CuaTypeFallbackError(
+      "clipboard-utility-missing",
+      [...attemptChain, "no xclip/xsel clipboard utility"],
+      stderrTail,
+      cause,
+    );
+  }
+  throw new CuaTypeFallbackError(
+    "clipboard-command",
+    [
+      ...attemptChain,
+      exitCode === undefined ? "clipboard command errored" : `clipboard command failed (exit ${exitCode})`,
+    ],
+    stderrTail,
+    cause,
+  );
+}
+
 /**
  * Best-effort clipboard-paste fallback for a `type` action after the primary
  * `desktop.write` failed. Records each attempt into `attemptChain` (path labels
@@ -192,7 +244,7 @@ async function pasteTextViaClipboard(
     );
   }
 
-  const result = await commands.run([
+  const clipboardCommand = [
     "set -euo pipefail",
     "export DISPLAY=\"${DISPLAY:-:0}\"",
     `text_path=${shellSingleQuote(path)}`,
@@ -212,25 +264,29 @@ async function pasteTextViaClipboard(
     "  echo 'no xclip/xsel clipboard utility available for paste fallback' >&2",
     "  exit 127",
     "fi"
-  ].join("\n"), {
-    requestTimeoutMs: TYPE_FALLBACK_TIMEOUT_MS,
-    timeoutMs: TYPE_FALLBACK_TIMEOUT_MS
-  });
+  ].join("\n");
 
-  const stderrTail = tailOf(result.stderr ?? result.stdout);
-  if (result.exitCode === 127) {
-    throw new CuaTypeFallbackError(
-      "clipboard-utility-missing",
-      [...attemptChain, "no xclip/xsel clipboard utility"],
-      stderrTail,
-    );
+  // The real @e2b/desktop Sandbox THROWS CommandExitError on any non-zero exit
+  // (it does not return a non-zero exitCode), so the exit code + stderr must be
+  // recovered from the thrown error. A structural fake that returns a non-zero
+  // exitCode instead of throwing is also handled, so both shapes are covered.
+  let runResult: DesktopCommandResult | undefined;
+  let runError: unknown;
+  try {
+    runResult = await commands.run(clipboardCommand, {
+      requestTimeoutMs: TYPE_FALLBACK_TIMEOUT_MS,
+      timeoutMs: TYPE_FALLBACK_TIMEOUT_MS
+    });
+  } catch (error) {
+    runError = error;
   }
-  if (result.exitCode !== undefined && result.exitCode !== 0) {
-    throw new CuaTypeFallbackError(
-      "clipboard-command",
-      [...attemptChain, `clipboard command failed (exit ${result.exitCode})`],
-      stderrTail,
-    );
+
+  if (runError !== undefined) {
+    const detail = commandFailureDetail(runError);
+    throwClipboardCommandFailure(detail.exitCode, detail.stderrTail, attemptChain, runError);
+  }
+  if (runResult !== undefined && runResult.exitCode !== undefined && runResult.exitCode !== 0) {
+    throwClipboardCommandFailure(runResult.exitCode, tailOf(runResult.stderr ?? runResult.stdout), attemptChain);
   }
   attemptChain.push("clipboard write ok");
 
