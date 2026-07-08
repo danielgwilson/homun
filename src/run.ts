@@ -4851,6 +4851,10 @@ function subjectStateFindings(bundle: RunBundle): string[] {
   // bundle.mode, never by the presence/shape of other fields. Never echoes the malformed value
   // (it could itself be a leaked value, same discipline as the externalEnvNames check below).
   if (live && subject.source === "local-tree") {
+    // Note: a malformed-but-present string is already rejected upstream by the
+    // isRunSubjectProvenance shape gate, so in practice this branch fires for the
+    // MISSING case; the pattern re-check stays as defense in depth for callers
+    // that bypass the schema gate.
     const pin = (subject as { archiveSha256?: unknown }).archiveSha256;
     if (typeof pin !== "string" || !ARCHIVE_SHA256_PATTERN.test(pin)) {
       findings.push("subject.source is local-tree on a live run but archiveSha256 is missing or malformed (a local-tree subject must carry a well-formed 64-hex archive digest)");

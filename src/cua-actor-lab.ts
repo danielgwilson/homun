@@ -22,7 +22,7 @@
 //   run's actual mode ("raw" | "blurred" | "n/a") — every label downstream derives from it.
 
 import { randomBytes, createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runDesktopCommandOrThrow } from "./command-failure.js";
 import { pathToFileURL } from "node:url";
@@ -210,7 +210,7 @@ export interface CuaActorLabHooks extends BrowserLabAdapterHooks {
    * defaults to createLocalTreeArchive(root, opts) plus a host-side read of the produced
    * archive file into an ArrayBuffer. Called ONCE per run, before lane fan-out, on the live
    * local-tree route; the result (archive metadata + bytes) is shared byte-identically across
-   * every fan-out lane so every lane provably runs the same packed content.
+   * every fan-out lane, so one archiveSha256 describes every lane's packed content.
    */
   packLocalTree?: (args: {
     root: string;
@@ -1927,7 +1927,7 @@ export async function runCuaActorLab(options: RunCuaActorLabOptions): Promise<Cu
   });
 
   // Pack the working tree ONCE per run, on the host, BEFORE any sandbox or provider call: every
-  // fan-out lane below uploads this SAME archive, so all lanes provably run the identical
+  // fan-out lane below uploads this SAME archive, so one archiveSha256 describes every lane's
   // digest. Dry-run packs nothing (no fs side effects; the contract bundle carries no
   // archiveSha256). A packing failure fails the run closed here, before createDesktopSandbox is
   // ever reached.
@@ -1943,6 +1943,12 @@ export async function runCuaActorLab(options: RunCuaActorLabOptions): Promise<Cu
       });
       localTreeArchive = packed.archive;
       localTreeArchiveBuffer = packed.buffer;
+      // One operator-facing line (stderr, same channel as emitPreflightPlan): what left the
+      // host, by counts and digest only, never paths or file names.
+      process.stderr.write(
+        `homun local-tree: packed ${packed.archive.fileCount} entries, ${packed.archive.totalBytes} bytes, archiveSha256 ${packed.archive.archiveSha256}`
+        + `${packed.archive.git ? ` (commit ${packed.archive.git.commit.slice(0, 12)}, ${packed.archive.git.dirty ? "dirty" : "clean"} working tree)` : " (not a git work tree)"}\n`
+      );
     } catch (error) {
       return fail(
         "HOMUN_CUA_LAB_SUBJECT_INVALID",
@@ -2684,6 +2690,10 @@ async function defaultPackLocalTree(args: {
   });
   const bytes = await readFile(archive.archivePath);
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  // The archive was written to a fresh mkdtemp dir (no outputPath passed above); once the
+  // bytes are buffered the on-disk copy is pure residue, and a packed working tree left in
+  // the host tmpdir is itself a small leak surface. Best-effort removal.
+  await rm(path.dirname(archive.archivePath), { recursive: true, force: true }).catch(() => undefined);
   return { archive, buffer };
 }
 

@@ -103,9 +103,27 @@ describe("always-on denylist constants", () => {
       "*.p12",
       "*.pfx",
       "id_rsa*",
+      "id_dsa*",
       "id_ed25519*",
       "id_ecdsa*",
       "*.keystore",
+      "*.jks",
+      "*.ppk",
+      "*.gpg",
+      "*.tfstate",
+      "terraform.tfstate.backup",
+      ".npmrc",
+      ".netrc",
+      ".dockercfg",
+      "kubeconfig",
+      "credentials.json",
+      "service-account.json",
+      "serviceAccount.json",
+      "service_account.json",
+      "secrets.json",
+      "secrets.yaml",
+      "secrets.yml",
+      "auth.json",
     ]);
     expect(DEFAULT_LOCAL_TREE_MAX_ARCHIVE_BYTES).toBe(256 * 1024 * 1024);
   });
@@ -379,6 +397,96 @@ describe("archive shape", () => {
     const archive = createLocalTreeArchive(root, { outputPath });
     expect(archive.archivePath).toBe(path.resolve(outputPath));
     await expect(stat(archive.archivePath)).resolves.toBeTruthy();
+  });
+});
+
+describe("adversarial-review hardening (PR #265 pre-merge findings)", () => {
+  it("excludes credential-shaped filenames beyond key material, even when tracked", async () => {
+    const root = await makeTempRoot("denylist-credentials");
+    await writeFile(path.join(root, "app.txt"), "app\n");
+    await writeFile(path.join(root, "credentials.json"), '{"private_key_id":"fake"}\n');
+    await writeFile(path.join(root, "release.jks"), "fake keystore bytes\n");
+    runGit(root, ["init", "-q", "."]);
+    commitAll(root, ["app.txt", "credentials.json", "release.jks"], "init");
+    await writeFile(path.join(root, ".npmrc"), "//registry.example.com/:_authToken=fake\n");
+    await writeFile(path.join(root, "terraform.tfstate"), "{}\n");
+
+    const { entries } = enumerateLocalTree(root);
+    const relPaths = entries.map((entry) => entry.relPath);
+    expect(relPaths).toContain("app.txt");
+    expect(relPaths).not.toContain("credentials.json");
+    expect(relPaths).not.toContain("release.jks");
+    expect(relPaths).not.toContain(".npmrc");
+    expect(relPaths).not.toContain("terraform.tfstate");
+  });
+
+  it("normalizes extraExclude entries with leading ./ and trailing /", async () => {
+    const root = await makeTempRoot("exclude-normalize");
+    await mkdir(path.join(root, "secrets-dir"));
+    await writeFile(path.join(root, "secrets-dir/creds.txt"), "fake\n");
+    await writeFile(path.join(root, "kept.txt"), "kept\n");
+    runGit(root, ["init", "-q", "."]);
+    commitAll(root, ["."], "init");
+
+    for (const entry of ["secrets-dir/", "./secrets-dir"]) {
+      const { entries } = enumerateLocalTree(root, { extraExclude: [entry] });
+      const relPaths = entries.map((e) => e.relPath);
+      expect(relPaths).toContain("kept.txt");
+      expect(relPaths).not.toContain("secrets-dir/creds.txt");
+    }
+  });
+
+  it("rejects absolute-path and glob extraExclude entries instead of silently no-op'ing", async () => {
+    const root = await makeTempRoot("exclude-reject");
+    await writeFile(path.join(root, "a.txt"), "a\n");
+    expect(() => enumerateLocalTree(root, { extraExclude: ["/etc/secrets"] })).toThrow(/absolute path/);
+    expect(() => enumerateLocalTree(root, { extraExclude: ["**/secrets"] })).toThrow(/glob syntax/);
+  });
+
+  it("packs an unborn-HEAD repo (git init, no commit) with git info absent", async () => {
+    const root = await makeTempRoot("unborn-head");
+    await writeFile(path.join(root, "fresh.txt"), "scaffolded\n");
+    runGit(root, ["init", "-q", "."]);
+
+    const archive = createLocalTreeArchive(root);
+    expect(archive.git).toBeUndefined();
+    expect(archive.fileCount).toBeGreaterThan(0);
+    expect(listTarEntries(archive.archivePath).join("\n")).toContain("fresh.txt");
+  });
+
+  it("scopes the dirty flag to the packed subtree, not the whole enclosing repo", async () => {
+    const repo = await makeTempRoot("subtree-dirty");
+    await mkdir(path.join(repo, "packed-app"));
+    await mkdir(path.join(repo, "sibling-pkg"));
+    await writeFile(path.join(repo, "packed-app/app.txt"), "app\n");
+    await writeFile(path.join(repo, "sibling-pkg/lib.txt"), "lib\n");
+    runGit(repo, ["init", "-q", "."]);
+    commitAll(repo, ["."], "init");
+
+    const packedRoot = path.join(repo, "packed-app");
+
+    const clean = enumerateLocalTree(packedRoot);
+    expect(clean.git?.dirty).toBe(false);
+
+    await writeFile(path.join(repo, "sibling-pkg/lib.txt"), "lib changed elsewhere\n");
+    const siblingDirty = enumerateLocalTree(packedRoot);
+    expect(siblingDirty.git?.dirty).toBe(false);
+
+    await writeFile(path.join(repo, "packed-app/app.txt"), "app changed here\n");
+    const selfDirty = enumerateLocalTree(packedRoot);
+    expect(selfDirty.git?.dirty).toBe(true);
+  });
+
+  it("packing error messages never contain the absolute root path", async () => {
+    const root = await makeTempRoot("error-paths");
+    try {
+      createLocalTreeArchive(root);
+      expect.unreachable("empty root must throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).not.toContain(root);
+      expect((error as Error).message).not.toContain(tmpdir());
+    }
   });
 });
 

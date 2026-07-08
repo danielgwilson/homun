@@ -47,6 +47,7 @@
 // There is deliberately NO v1 compatibility: v1 had zero real users. Breaking schema changes
 // bump the version honestly.
 
+import { normalizeExtraExcludeEntry } from "./source-archive.js";
 import { actorRegistry } from "./actor-registry.js";
 import { DEVICE_PRESET_NAMES, isDevicePresetName } from "./device-presets.js";
 import type { StopConditionPrimitive, StopWhen, StopWhenRule } from "./stop-conditions.js";
@@ -1664,13 +1665,33 @@ function parseLocalTree(raw: unknown): { ok: true; value: LabSubjectLocalTree | 
     return invalid("`subject.localTree` must be an object ({ keep?, exclude?, maxArchiveBytes? }).");
   }
   const localTree: LabSubjectLocalTree = {};
-  if (typeof raw.keep === "boolean") localTree.keep = raw.keep;
+  if (raw.keep !== undefined) {
+    if (typeof raw.keep !== "boolean") {
+      return invalid("`subject.localTree.keep` must be a boolean (YAML true/false, not a quoted string).");
+    }
+    localTree.keep = raw.keep;
+  }
   if (raw.exclude !== undefined) {
     if (!Array.isArray(raw.exclude) || raw.exclude.some((item) => typeof item !== "string" || item.trim().length === 0)) {
       return invalid("`subject.localTree.exclude` must be a list of non-empty strings (extra archive excludes on top of the always-on denylist).");
     }
     const exclude = strList(raw.exclude);
-    if (exclude) localTree.exclude = exclude;
+    if (exclude) {
+      // Normalize/validate each entry at parse time so a mis-shaped exclude the
+      // author believed in can never silently no-op at packing time: absolute
+      // paths and glob syntax are rejected with the packing boundary's own
+      // reason; "./prefix" and "prefix/" normalize to the enumeration relPath
+      // shape.
+      const normalized: string[] = [];
+      for (const entry of exclude) {
+        try {
+          normalized.push(normalizeExtraExcludeEntry(entry));
+        } catch (error) {
+          return invalid(`\`subject.localTree.exclude\`: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      localTree.exclude = normalized;
+    }
   }
   if (raw.maxArchiveBytes !== undefined) {
     const maxArchiveBytes = posInt(raw.maxArchiveBytes);

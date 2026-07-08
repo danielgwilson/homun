@@ -68,11 +68,14 @@ A lab is a composition over code primitives, not a hardcoded kind:
   closed (`HOMUN_CUA_LAB_LOCAL_APP_NO_EXECUTOR`), never a desktop attempt. See
   [`docs/architecture/state-driven-executor.md`](../architecture/state-driven-executor.md);
 - `subject.localTree` (`local-tree` subjects, computer-use route): pack/upload
-  knobs for the packed working tree: `exclude[]` (extra archive excludes,
-  path prefixes or basenames, on top of the always-on denylist), `keep`
+  knobs for the packed working tree: `exclude[]` (extra archive excludes on
+  top of the always-on denylist; entries match as a repo-relative path
+  prefix or an exact basename, absolute paths and glob syntax are rejected
+  at parse time, and leading `./` / trailing `/` are normalized), `keep`
   (preserve the sandbox on a failed lane for debugging, mirroring
-  `subject.clone.keep`), and `maxArchiveBytes` (upload size cap override;
-  default 256 MiB). Routing requires `execution.target: e2b-desktop` and a
+  `subject.clone.keep`; a kept local-tree sandbox holds the packed working
+  tree, including any file that survived the denylist), and
+  `maxArchiveBytes` (upload size cap override; default 256 MiB). Routing requires `execution.target: e2b-desktop` and a
   computer-use actor; `subject.serve`/`env`/`state` apply exactly as they do
   on the clone route (identical install/build/start/state semantics). The
   packed root is the lab resolution cwd; there is no path field, by design
@@ -81,7 +84,11 @@ A lab is a composition over code primitives, not a hardcoded kind:
   is a git work tree (`git ls-files --cached --others --exclude-standard`,
   honoring `.gitignore`) or a denylist-only recursive walk otherwise; an
   always-on denylist (`.git`, `node_modules`, `.homun`, `.env*`, key/cert
-  file patterns) applies in both modes and is not overridable. The lab packs
+  file patterns, and common credential-shaped names; the authoritative list
+  is `LOCAL_TREE_DENYLIST_BASENAME_PATTERNS` in `src/source-archive.ts`)
+  applies in both modes and is not overridable. The denylist matches names,
+  not contents; a secret in a file it does not name packs like any other
+  file, so review the pack summary line and use `localTree.exclude`. The lab packs
   ONCE per run and uploads the identical archive to every fan-out lane. The
   in-sandbox commit refresh clone subjects use is skipped: `.git` is never
   uploaded, so identity comes from the host-side archive digest instead. See

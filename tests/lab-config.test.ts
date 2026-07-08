@@ -1412,6 +1412,16 @@ describe("parseLabConfig (local-tree subject - issue #261)", () => {
     expect(result.warnings).toEqual([]);
   });
 
+  it("normalizes localTree.exclude entries (leading ./ and trailing / stripped)", () => {
+    const result = parseLabConfig({
+      ...validLocalTree,
+      subject: { ...validLocalTree.subject, localTree: { exclude: ["./big-media", "vendor/"] } }
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.config.subject.localTree).toEqual({ exclude: ["big-media", "vendor"] });
+  });
+
   it("round-trips subject.localTree fields (keep/exclude/maxArchiveBytes)", () => {
     const result = parseLabConfig({
       ...validLocalTree,
@@ -1451,6 +1461,9 @@ describe("parseLabConfig (local-tree subject - issue #261)", () => {
     }],
     ["topology: shared-world on a local-tree subject", { ...validLocalTree, subject: { ...validLocalTree.subject, topology: "shared-world" } }],
     ["localTree.exclude with an empty string entry", { ...validLocalTree, subject: { ...validLocalTree.subject, localTree: { exclude: ["ok", ""] } } }],
+    ["localTree.exclude with an absolute path", { ...validLocalTree, subject: { ...validLocalTree.subject, localTree: { exclude: ["/etc/secrets"] } } }],
+    ["localTree.exclude with glob syntax", { ...validLocalTree, subject: { ...validLocalTree.subject, localTree: { exclude: ["**/secrets"] } } }],
+    ["localTree.keep as a quoted YAML string", { ...validLocalTree, subject: { ...validLocalTree.subject, localTree: { keep: "true" } } }],
     ["localTree.maxArchiveBytes zero", { ...validLocalTree, subject: { ...validLocalTree.subject, localTree: { maxArchiveBytes: 0 } } }],
     ["localTree.maxArchiveBytes negative", { ...validLocalTree, subject: { ...validLocalTree.subject, localTree: { maxArchiveBytes: -1 } } }]
   ])("fails closed on local-tree mis-config: %s", (_label, input) => {

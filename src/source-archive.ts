@@ -77,9 +77,27 @@ export const LOCAL_TREE_DENYLIST_BASENAME_PATTERNS = [
   "*.p12",
   "*.pfx",
   "id_rsa*",
+  "id_dsa*",
   "id_ed25519*",
   "id_ecdsa*",
   "*.keystore",
+  "*.jks",
+  "*.ppk",
+  "*.gpg",
+  "*.tfstate",
+  "terraform.tfstate.backup",
+  ".npmrc",
+  ".netrc",
+  ".dockercfg",
+  "kubeconfig",
+  "credentials.json",
+  "service-account.json",
+  "serviceAccount.json",
+  "service_account.json",
+  "secrets.json",
+  "secrets.yaml",
+  "secrets.yml",
+  "auth.json",
 ] as const;
 
 /** Default upload size cap: 256 MiB. */
@@ -108,11 +126,12 @@ export function enumerateLocalTree(
 ): { entries: LocalTreeEntry[]; git?: LocalTreeGitInfo } {
   const resolvedRoot = path.resolve(root);
   assertValidRoot(resolvedRoot);
-  const extraExclude = options.extraExclude ?? [];
+  const extraExclude = (options.extraExclude ?? []).map(normalizeExtraExcludeEntry);
 
   if (isGitWorkTree(resolvedRoot)) {
     const entries = enumerateGitTree(resolvedRoot, extraExclude);
-    return { entries, git: captureGitInfo(resolvedRoot) };
+    const git = captureGitInfo(resolvedRoot);
+    return git ? { entries, git } : { entries };
   }
 
   const entries: LocalTreeEntry[] = [];
@@ -144,9 +163,9 @@ export function createLocalTreeArchive(
 
   if (entries.length === 0) {
     throw new Error(
-      `Local tree root "${resolvedRoot}" produced zero packable entries after the always-on denylist` +
+      `Local tree root "${path.basename(resolvedRoot)}" produced zero packable entries after the always-on denylist` +
         (extraExclude.length > 0 ? " and extraExclude" : "") +
-        "; local-tree packing requires at least one non-denylisted file or symlink.",
+        "; local-tree packing requires at least one non-denylisted file or symlink. (Paths in this message are basenames only; the packed root is the lab resolution cwd.)",
     );
   }
 
@@ -155,7 +174,7 @@ export function createLocalTreeArchive(
   const enumeratedBytes = entries.reduce((sum, entry) => (entry.kind === "file" ? sum + entry.size : sum), 0);
   if (enumeratedBytes > maxArchiveBytes) {
     throw new Error(
-      `Local tree archive for "${resolvedRoot}" is ${enumeratedBytes} bytes, exceeding maxArchiveBytes ` +
+      `Local tree archive for "${path.basename(resolvedRoot)}" is ${enumeratedBytes} bytes, exceeding maxArchiveBytes ` +
         `(${maxArchiveBytes}); pass a larger maxArchiveBytes or exclude more paths via localTree.exclude.`,
     );
   }
@@ -182,11 +201,11 @@ function assertValidRoot(root: string): void {
     stat = statSync(root);
   } catch {
     throw new Error(
-      `Local tree root "${root}" does not exist or is not readable; local-tree packing requires an existing directory.`,
+      `Local tree root "${path.basename(root)}" does not exist or is not readable; local-tree packing requires an existing directory.`,
     );
   }
   if (!stat.isDirectory()) {
-    throw new Error(`Local tree root "${root}" is not a directory; local-tree packing requires a directory root.`);
+    throw new Error(`Local tree root "${path.basename(root)}" is not a directory; local-tree packing requires a directory root.`);
   }
 }
 
@@ -217,14 +236,26 @@ function gitListFiles(root: string): string[] {
   return [...new Set(names)];
 }
 
-function captureGitInfo(root: string): LocalTreeGitInfo {
-  const commit = execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: root,
-    stdio: ["ignore", "pipe", "ignore"],
-  })
-    .toString("utf8")
-    .trim();
-  const status = execFileSync("git", ["status", "--porcelain"], {
+function captureGitInfo(root: string): LocalTreeGitInfo | undefined {
+  let commit: string;
+  try {
+    commit = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: root,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString("utf8")
+      .trim();
+  } catch {
+    // Unborn HEAD (git init with no commit yet): the tree is still packable
+    // and .gitignore-aware, but there is no commit to pin and dirty is
+    // meaningless without one, so git info is simply absent.
+    return undefined;
+  }
+  // Pathspec-scoped to the packed root: `git status --porcelain` without a
+  // pathspec reports the WHOLE enclosing repository, which would report a
+  // clean packed subtree as dirty whenever an unrelated sibling package in a
+  // monorepo has in-progress changes.
+  const status = execFileSync("git", ["status", "--porcelain", "--", "."], {
     cwd: root,
     stdio: ["ignore", "pipe", "ignore"],
     maxBuffer: 64 * 1024 * 1024,
@@ -317,6 +348,35 @@ function isDenylistedSegment(relPath: string): boolean {
   return segments.some((segment) => (LOCAL_TREE_DENYLIST_PATH_SEGMENTS as readonly string[]).includes(segment));
 }
 
+/**
+ * Normalize an author-supplied exclude entry to the relPath shape enumeration
+ * produces (no leading "./", no trailing "/"). Absolute paths and glob syntax
+ * are REJECTED, not silently no-op'd: an exclude the author believed in but
+ * that never matches anything is a leak vector, so unusable shapes fail
+ * closed at the packing boundary (and, for lab-config callers, already at
+ * parse time).
+ */
+export function normalizeExtraExcludeEntry(entry: string): string {
+  const trimmed = entry.trim();
+  if (trimmed.startsWith("/") || /^[A-Za-z]:[\\/]/.test(trimmed)) {
+    throw new Error(
+      `localTree.exclude entry "${trimmed}" is an absolute path; entries must be repo-relative path prefixes or basenames (e.g. "big-media" or "fixtures/huge").`,
+    );
+  }
+  if (/[*?[\]]/.test(trimmed)) {
+    throw new Error(
+      `localTree.exclude entry "${trimmed}" uses glob syntax, which is not supported; entries match as a repo-relative path prefix or an exact basename.`,
+    );
+  }
+  let normalized = trimmed;
+  while (normalized.startsWith("./")) normalized = normalized.slice(2);
+  while (normalized.endsWith("/")) normalized = normalized.slice(0, -1);
+  if (normalized.length === 0) {
+    throw new Error(`localTree.exclude entry "${entry}" normalizes to an empty path.`);
+  }
+  return normalized;
+}
+
 function matchesExtraExclude(relPath: string, basename: string, extraExclude: readonly string[]): boolean {
   return extraExclude.some(
     (entry) => relPath === entry || relPath.startsWith(`${entry}/`) || basename === entry,
@@ -383,7 +443,7 @@ function writeTarArchive(root: string, entries: readonly LocalTreeEntry[], archi
     try {
       execFileSync("tar", args, { stdio: ["ignore", "ignore", "pipe"] });
     } catch (error) {
-      throw new Error(`Failed to create local-tree tar archive at "${archivePath}": ${tarErrorTail(error)}`);
+      throw new Error(`Failed to create the local-tree tar archive: ${tarErrorTail(error)}`);
     }
   } finally {
     rmSync(listDir, { recursive: true, force: true });
