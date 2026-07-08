@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
 
-import { digestText, publicPathForTrace, redactText } from "./redaction.js";
+import { digestText, publicPathForTrace, redactText, tailText } from "./redaction.js";
 
 export const CODEX_APP_SERVER_TRACE_SCHEMA = "homun.codex-app-server-trace.v1";
 
@@ -960,13 +960,6 @@ function limitTranscript(value: string): string {
     return value;
   }
   return `[...sanitized transcript truncated to last ${maxChars} characters...]\n${value.slice(-maxChars)}`;
-}
-
-function tailText(value: string, maxChars: number): string {
-  if (value.length <= maxChars) {
-    return value;
-  }
-  return value.slice(-maxChars);
 }
 
 function isRecord(value: unknown): value is JsonObject {

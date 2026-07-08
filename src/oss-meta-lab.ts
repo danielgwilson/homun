@@ -19,6 +19,7 @@ import type {
 import {
   DEFAULT_OSS_REPOS,
   normalizeOssRepoSlugs,
+  repoSlug,
   validateOssRepoSlug
 } from "./oss-lab.js";
 import { redactOssRemoteTelemetryText } from "./oss-remote-telemetry.js";
@@ -353,7 +354,7 @@ export function buildOssRepoAssignments(repos: string[], count: number): OssMeta
     return {
       index: index + 1,
       repo,
-      scenarioId: `oss-meta-${repoSlugToken(repo)}`,
+      scenarioId: `oss-meta-${repoSlug(repo)}`,
       simId: `oss-${String(index + 1).padStart(2, "0")}`,
       streamId: `oss-${String(index + 1).padStart(2, "0")}-desktop`
     };
@@ -643,7 +644,7 @@ async function createHostActorPlan(args: {
   redactRepoNames: boolean;
   runId: string;
 }): Promise<OssMetaLabHostActorPlanResult> {
-  const token = repoSlugToken(args.assignment.repo);
+  const token = repoSlug(args.assignment.repo);
   const actorRoot = path.join(args.cwd, ".homun", "runs", args.runId, "host-actors", token);
   const artifactPath = path.join("host-actors", token, "actor-plan.json");
   const tmpRoot = path.join(args.cwd, ".homun", "tmp", "host-actors", args.runId, token);
@@ -2865,7 +2866,7 @@ async function launchLiveDesktops(
         ...(options.codexAppServerMode === undefined ? {} : { codexAppServerMode: options.codexAppServerMode }),
         ...(hostActorPlanResult === undefined ? {} : { hostActorPlanResult }),
         repoLabel,
-        token: options.redactRepoNames ? repoLabel : repoSlugToken(assignment.repo)
+        token: options.redactRepoNames ? repoLabel : repoSlug(assignment.repo)
       });
       await desktop.wait(750).catch(() => undefined);
       await desktop.stream.start({ requireAuth: true });
@@ -3889,7 +3890,7 @@ async function startOssBootstrap(
   requestTimeoutMs: number,
   display: { codexAppServerMode?: boolean; hostActorPlanResult?: OssMetaLabHostActorPlanResult; repoLabel: string; token: string } = {
     repoLabel: assignment.repo,
-    token: repoSlugToken(assignment.repo)
+    token: repoSlug(assignment.repo)
   }
 ): Promise<OssMetaLabBootstrap> {
   const token = display.token;
@@ -5659,10 +5660,6 @@ function compactError(error: unknown): string {
 function makeMetaRunId(): string {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   return `oss-meta-${stamp}-${randomBytes(4).toString("hex")}`;
-}
-
-function repoSlugToken(repo: string): string {
-  return repo.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
 function repoArtifactLabel(assignment: OssMetaLabAssignment): string {

@@ -28,6 +28,7 @@ import { parse as parseYaml } from "yaml";
 
 import type { ActorCompletionReason, ActorPersonaRef, ActorStatus, ActorTrace } from "./actor-contract.js";
 import { actorRegistry, isScriptedBrowserActorDescriptor } from "./actor-registry.js";
+import { toErrorMessage } from "./command-failure.js";
 import {
   commandDigestOf,
   provisionCloneSubject,
@@ -387,7 +388,7 @@ export async function runScriptedBrowserLab(options: RunScriptedBrowserLabOption
     } catch (error) {
       // The session itself maps launch failures to harness_error; reaching here means the
       // harness around it failed. Redacted at this boundary before persisting anywhere.
-      sessionError = redactText(scrubKnownValues(compactError(error)));
+      sessionError = redactText(scrubKnownValues(toErrorMessage(error)));
     } finally {
       if (subjectDesktop && subjectModule) {
         if (typeof subjectModule.Sandbox.kill === "function") {
@@ -395,7 +396,7 @@ export async function runScriptedBrowserLab(options: RunScriptedBrowserLabOption
             await subjectModule.Sandbox.kill(subjectDesktop.sandboxId, { requestTimeoutMs: 60_000 });
             subjectKilled = true;
           } catch (error) {
-            warnings.push(`Subject sandbox teardown failed (server-side kill-on-timeout will reclaim it): ${redactText(scrubKnownValues(compactError(error)))}`);
+            warnings.push(`Subject sandbox teardown failed (server-side kill-on-timeout will reclaim it): ${redactText(scrubKnownValues(toErrorMessage(error)))}`);
           }
         } else {
           warnings.push("Installed @e2b/desktop SDK does not expose Sandbox.kill; server-side kill-on-timeout will reclaim the subject sandbox.");
@@ -967,9 +968,4 @@ function hostOriginDigest(url: string): string {
   } catch {
     return commandDigestOf(url);
   }
-}
-
-function compactError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
 }

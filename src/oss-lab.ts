@@ -215,7 +215,7 @@ async function runRepoTrial(args: {
   const url = `https://github.com/${args.repo}.git`;
   const steps: OssLabStep[] = [];
   const warnings: string[] = [];
-  const homunRunId = `${args.runId}-${repoRunSuffix(args.repo)}`;
+  const homunRunId = `${args.runId}-${repoSlug(args.repo)}`;
 
   const clone = await measureStep("clone", async () => {
     const result = await runCommand(args.cwd, "git", [
@@ -382,7 +382,8 @@ function summarizeInit(result: InitResult): string {
   return `${created} files created, ${updated} files updated, ${mkdirs} runtime dirs planned/applied`;
 }
 
-function repoRunSuffix(repo: string): string {
+/** Repo slug for run-id suffixes/artifact tokens: lowercased, non-alnum -> "-", trimmed. */
+export function repoSlug(repo: string): string {
   return repo.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 

@@ -18,6 +18,16 @@ export function tailOf(value: string | undefined): string {
 }
 
 /**
+ * Coerce an unknown thrown value to its message string. Prefer this over the
+ * inline `error instanceof Error ? error.message : String(error)` so error
+ * stringification stays uniform. Note: this does NOT redact -- sites that emit
+ * to public-bound artifacts must run the result through `redactText` first.
+ */
+export function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
  * Recover the exit code + a sanitized stderr/stdout tail from a command failure.
  * The real @e2b/desktop CommandExitError exposes exitCode/stderr/stdout/error;
  * these are read structurally so the caller does not depend on the SDK class.

@@ -293,9 +293,26 @@ function boxBlurRgba(data: Buffer, width: number, height: number, radius: number
 // prompt into a log-safe reference (placeholder + digest + length).
 // ---------------------------------------------------------------------------
 
-/** Stable short content digest (sha256, first 12 hex chars). */
-export function digestText(text: string): string {
-  return createHash("sha256").update(text).digest("hex").slice(0, 12);
+/** Stable short content digest (sha256 hex, first `length` chars; default 12). */
+export function digestText(text: string, length = 12): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, length);
+}
+
+/** Last `maxChars` of a string (the whole string when shorter). No redaction. */
+export function tailText(value: string, maxChars: number): string {
+  return value.length <= maxChars ? value : value.slice(-maxChars);
+}
+
+/**
+ * A redacted, ellipsis-prefixed tail of captured output for a (public-bound)
+ * message field. Pattern-redacts the FULL text BEFORE truncating: slicing a tail
+ * first could cut through a secret's prefix (e.g. drop "sk-proj-") and defeat the
+ * pattern matcher on the remainder. Callers should literal-scrub known
+ * provisioned values first; this is the pattern pass. Empty output -> "(no output)".
+ */
+export function redactedTail(text: string, maxChars: number): string {
+  const trimmed = redactText(text).trim();
+  return trimmed.length > maxChars ? `…${trimmed.slice(-maxChars)}` : trimmed || "(no output)";
 }
 
 /**

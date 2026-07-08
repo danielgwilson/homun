@@ -24,7 +24,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
-import { runDesktopCommandOrThrow } from "./command-failure.js";
+import { runDesktopCommandOrThrow, toErrorMessage } from "./command-failure.js";
 
 import type { ActorCompletionReason, ActorPersonaRef, ActorStatus } from "./actor-contract.js";
 import {
@@ -246,10 +246,6 @@ interface RoleOutcome {
   harnessError: boolean;
   /** The checkpoint snapshot taken AFTER this role's turn (absent for skipped roles). */
   afterCheckpoint?: SharedWorldCheckpoint;
-}
-
-function compactError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function readPositiveInt(value: string | undefined, fallback: number): number {
@@ -664,7 +660,7 @@ export async function runSharedWorldLab(options: RunSharedWorldLabOptions): Prom
           };
           session = await runSession(sessionOptions);
         } catch (error) {
-          sessionError = redactText(scrubKnownValues(compactError(error)));
+          sessionError = redactText(scrubKnownValues(toErrorMessage(error)));
         }
 
         if (session) {
@@ -715,7 +711,7 @@ export async function runSharedWorldLab(options: RunSharedWorldLabOptions): Prom
       }
     } catch (error) {
       runFailed = true;
-      warnings.push(`Shared-world run failed before completion: ${redactText(scrubKnownValues(compactError(error)))}`);
+      warnings.push(`Shared-world run failed before completion: ${redactText(scrubKnownValues(toErrorMessage(error)))}`);
     } finally {
       // ONE teardown BY exact sandboxId — NEVER Sandbox.list (the 2026-06-16 prod-incident rail).
       if (desktop && desktopModule) {
@@ -730,7 +726,7 @@ export async function runSharedWorldLab(options: RunSharedWorldLabOptions): Prom
             await desktopModule.Sandbox.kill(desktop.sandboxId, { requestTimeoutMs: 60_000 });
             killed = true;
           } catch (error) {
-            warnings.push(`Sandbox teardown failed (server-side kill-on-timeout will reclaim it): ${redactText(scrubKnownValues(compactError(error)))}`);
+            warnings.push(`Sandbox teardown failed (server-side kill-on-timeout will reclaim it): ${redactText(scrubKnownValues(toErrorMessage(error)))}`);
           }
         } else {
           warnings.push("Installed @e2b/desktop SDK does not expose Sandbox.kill; server-side kill-on-timeout will reclaim the sandbox.");

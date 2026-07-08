@@ -42,6 +42,7 @@ import path from "node:path";
 import type { ActorCompletionReason, ActorPersonaRef, ActorStatus, ActorTrace, ActorTraceItem } from "./actor-contract.js";
 import { ACTOR_TRACE_SCHEMA, TERMINAL_AGENT_CAPABILITIES } from "./actor-contract.js";
 import { actorRegistry, isTerminalActorDescriptor } from "./actor-registry.js";
+import { toErrorMessage } from "./command-failure.js";
 import type { LabConfig, LabScenarioCaps } from "./lab-config.js";
 import {
   loadE2BDesktopModule,
@@ -49,7 +50,7 @@ import {
   type E2BDesktopSandbox
 } from "./e2b-desktop-launch.js";
 import { renderObserver, type ObserverResult } from "./observer.js";
-import { digestText, redactText } from "./redaction.js";
+import { digestText, redactedTail, redactText } from "./redaction.js";
 import {
   buildRunSource,
   extractLocalActorVerdict,
@@ -951,7 +952,7 @@ async function runLiveTerminalSession(args: RunLiveTerminalSessionArgs): Promise
         if (result.value.error) runError = result.value.error;
       }
     } catch (error) {
-      runError = compactError(error);
+      runError = toErrorMessage(error);
     }
     const durationMs = Math.max(0, now() - startedAt);
 
@@ -997,7 +998,7 @@ async function runLiveTerminalSession(args: RunLiveTerminalSessionArgs): Promise
       recordLifecycle("terminal-lab.exec.blocked", sessionReason);
     }
   } catch (error) {
-    sessionError = sanitize(compactError(error));
+    sessionError = sanitize(toErrorMessage(error));
     sessionStatus = "failed";
     completionReason = "harness_error";
     sessionReason = `live terminal-product session failed: ${sessionError}`;
@@ -1319,7 +1320,7 @@ async function teardownSandbox(args: {
       await sandboxModule.Sandbox.kill(sandbox.sandboxId, { requestTimeoutMs });
       killed = true;
     } catch (error) {
-      warnings.push(`Sandbox teardown failed (server-side kill-on-timeout will reclaim it): ${sanitize(compactError(error))}`);
+      warnings.push(`Sandbox teardown failed (server-side kill-on-timeout will reclaim it): ${sanitize(toErrorMessage(error))}`);
     }
   } else {
     return { killed: false, remaining: -1, reason: "installed @e2b/desktop SDK does not expose Sandbox.kill; server-side kill-on-timeout will reclaim the sandbox" };
@@ -1349,8 +1350,8 @@ async function teardownSandbox(args: {
     recordLifecycle("terminal-lab.cleanup.verified", `Sandbox ${sandbox.sandboxId} killed; re-list confirms this run's sandbox is ${ours === 0 ? "no longer present" : "still present"}.`);
     return { killed, remaining: ours, reason: ours === 0 ? "killed; re-list confirms this run's sandbox is reclaimed" : `killed; this run's sandbox still listed as running` };
   } catch (error) {
-    recordLifecycle("terminal-lab.cleanup.list_error", `Sandbox ${sandbox.sandboxId} killed; re-list failed: ${sanitize(compactError(error))}`);
-    return { killed, remaining: -1, reason: `killed; re-list to verify reclamation failed: ${sanitize(compactError(error))}` };
+    recordLifecycle("terminal-lab.cleanup.list_error", `Sandbox ${sandbox.sandboxId} killed; re-list failed: ${sanitize(toErrorMessage(error))}`);
+    return { killed, remaining: -1, reason: `killed; re-list to verify reclamation failed: ${sanitize(toErrorMessage(error))}` };
   }
 }
 
@@ -1410,15 +1411,9 @@ function composeLivePrompt(args: {
   ].join("\n");
 }
 
-/** sha256-12 of the exact command/text (the promptDigest convention). */
+/** Redacted, ellipsis-prefixed tail of a captured stream/log for a message field. */
 function tailOf(text: string): string {
-  const trimmed = redactText(text).trim();
-  return trimmed.length > TAIL_CHARS ? `…${trimmed.slice(-TAIL_CHARS)}` : trimmed || "(no output)";
-}
-
-function compactError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
+  return redactedTail(text, TAIL_CHARS);
 }
 
 /**

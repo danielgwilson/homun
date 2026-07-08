@@ -32,3 +32,7 @@ worktrees/
 # OS/editor noise
 .DS_Store
 *.log
+
+# python fixture caches
+__pycache__/
+*.pyc
