@@ -33,7 +33,7 @@ import { mapWithConcurrency } from "./concurrency.js";
 import { screenshotEvidenceError } from "./image-evidence.js";
 import { buildObserverData } from "./observer-data.js";
 import { parseResolvedPersona, personaToDirectives, renderPersonaPromptSection, type ResolvedPersona } from "./persona.js";
-import { containsSensitive, digestText, redactText, redactToSecretLabel } from "./redaction.js";
+import { containsSensitive, digestText, redactText, redactToSecretLabel, tailText } from "./redaction.js";
 import { loadE2BDesktopModule, type E2BDesktopModule } from "./e2b-desktop-launch.js";
 
 export const RUN_BUNDLE_SCHEMA = "homun.run-bundle.v1";
@@ -3564,14 +3564,6 @@ function limitTranscript(value: string): string {
   }
 
   return `[...sanitized transcript truncated to last ${LOCAL_ACTOR_TRANSCRIPT_MAX_CHARS} characters...]\n${value.slice(-LOCAL_ACTOR_TRANSCRIPT_MAX_CHARS)}`;
-}
-
-function tailText(value: string, maxChars: number): string {
-  if (value.length <= maxChars) {
-    return value;
-  }
-
-  return value.slice(-maxChars);
 }
 
 function normalizeSimCount(value: number | undefined): number | null {

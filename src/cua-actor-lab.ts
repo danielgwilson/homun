@@ -21,10 +21,10 @@
 //   conformant homun.actor-trace.v1 projection, whose `redaction.screenshots` records the
 //   run's actual mode ("raw" | "blurred" | "n/a") — every label downstream derives from it.
 
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { runDesktopCommandOrThrow } from "./command-failure.js";
+import { runDesktopCommandOrThrow, toErrorMessage } from "./command-failure.js";
 import { pathToFileURL } from "node:url";
 
 import type { ActorCompletionReason, ActorPersonaRef, ActorStatus, ActorTrace } from "./actor-contract.js";
@@ -82,7 +82,7 @@ import {
   type ObserverResult,
   type ObserverRuntimeStreamUrl
 } from "./observer.js";
-import { containsSensitive, redactText } from "./redaction.js";
+import { containsSensitive, digestText, redactedTail, redactText } from "./redaction.js";
 import { createLocalTreeArchive, type LocalTreeArchive } from "./source-archive.js";
 import type { StopWhen } from "./stop-conditions.js";
 import {
@@ -489,7 +489,7 @@ export function composeLaneInstructions(args: {
     persona: {
       id: args.persona ?? "cua-operator",
       traitsApplied: [],
-      promptDigest: createHash("sha256").update(instructions).digest("hex").slice(0, 16)
+      promptDigest: digestText(instructions, 16)
     }
   };
 }
@@ -1368,7 +1368,7 @@ export async function runCuaLane(spec: CuaLaneSpec, deps: CuaLaneDeps): Promise<
       try {
         const browserWindowId = await findVisibleBrowserWindowId(desktop, deps.requestTimeoutMs)
           .catch((error: unknown) => {
-            warnings.push(`Browser window lookup failed before live stream start (falling back to desktop stream): ${redactText(deps.scrubKnownValues(compactError(error)))}`);
+            warnings.push(`Browser window lookup failed before live stream start (falling back to desktop stream): ${redactText(deps.scrubKnownValues(toErrorMessage(error)))}`);
             return undefined;
           });
         if (browserWindowId !== undefined) {
@@ -1399,7 +1399,7 @@ export async function runCuaLane(spec: CuaLaneSpec, deps: CuaLaneDeps): Promise<
           warnings.push("Live desktop stream started but did not return a usable watch URL; Observer will fall back to screenshots.");
         }
       } catch (error) {
-        warnings.push(`Live desktop stream unavailable (run continues; evidence still captured): ${redactText(deps.scrubKnownValues(compactError(error)))}`);
+        warnings.push(`Live desktop stream unavailable (run continues; evidence still captured): ${redactText(deps.scrubKnownValues(toErrorMessage(error)))}`);
       }
 
       const sessionOptions: CuaActorSessionOptions = {
@@ -1422,7 +1422,7 @@ export async function runCuaLane(spec: CuaLaneSpec, deps: CuaLaneDeps): Promise<
       session = await deps.runSession(sessionOptions);
     }
   } catch (error) {
-    sessionError = redactText(deps.scrubKnownValues(compactError(error)));
+    sessionError = redactText(deps.scrubKnownValues(toErrorMessage(error)));
   } finally {
     if (!provisioned) {
       signal(false);
@@ -1444,7 +1444,7 @@ export async function runCuaLane(spec: CuaLaneSpec, deps: CuaLaneDeps): Promise<
           await desktopModule.Sandbox.kill(desktop.sandboxId, { requestTimeoutMs: 60_000 });
           killed = true;
         } catch (error) {
-          warnings.push(`Sandbox teardown failed (server-side kill-on-timeout will reclaim it): ${redactText(deps.scrubKnownValues(compactError(error)))}`);
+          warnings.push(`Sandbox teardown failed (server-side kill-on-timeout will reclaim it): ${redactText(deps.scrubKnownValues(toErrorMessage(error)))}`);
         }
       } else {
         warnings.push("Installed @e2b/desktop SDK does not expose Sandbox.kill; server-side kill-on-timeout will reclaim the sandbox.");
@@ -1522,7 +1522,7 @@ async function runInProcessLane(spec: CuaLaneSpec, deps: CuaLaneDeps): Promise<L
     };
     session = await deps.runSession(sessionOptions);
   } catch (error) {
-    sessionError = redactText(deps.scrubKnownValues(compactError(error)));
+    sessionError = redactText(deps.scrubKnownValues(toErrorMessage(error)));
   }
 
   if (session) {
@@ -2047,7 +2047,7 @@ export async function runCuaActorLab(options: RunCuaActorLabOptions): Promise<Cu
     } catch (error) {
       return fail(
         "HOMUN_CUA_LAB_SUBJECT_INVALID",
-        `local-tree packing failed: ${redactText(scrubKnownValues(compactError(error)))}`,
+        `local-tree packing failed: ${redactText(scrubKnownValues(toErrorMessage(error)))}`,
         descriptor.id
       );
     }
@@ -2782,7 +2782,7 @@ export async function provisionLocalTreeSubject(
     });
   } catch (error) {
     emitPhaseCompleted(args.onPhase, now, uploadStartedAt, "upload", false, "local-tree archive upload failed");
-    throw new Error(`subject-upload failed: ${tailOf(args.scrub(compactError(error)))}`);
+    throw new Error(`subject-upload failed: ${tailOf(args.scrub(toErrorMessage(error)))}`);
   }
   emitPhaseCompleted(args.onPhase, now, uploadStartedAt, "upload", true, "local-tree archive uploaded");
 
@@ -2838,7 +2838,7 @@ async function defaultPackLocalTree(args: {
 
 /** sha256 hex of the exact command string, first 16 chars (the promptDigest convention). */
 export function commandDigestOf(command: string): string {
-  return createHash("sha256").update(command).digest("hex").slice(0, 16);
+  return digestText(command, 16);
 }
 
 /**
@@ -2900,13 +2900,9 @@ function describeSubjectState(state: RunSubjectProvenance["state"], dryRun: bool
   }
 }
 
+// The in-sandbox `tail -c` upstream is a fundamental log-tail limit we cannot redact past.
 function tailOf(log: string): string {
-  // Pattern-redact on the FULL text BEFORE truncating: slicing a tail could otherwise cut
-  // through a secret's prefix (e.g. drop "sk-proj-") and defeat the pattern matcher on the
-  // remainder. Callers literal-scrub known provisioned values first; this is the pattern pass.
-  // (The in-sandbox `tail -c` upstream is a fundamental log-tail limit we cannot redact past.)
-  const trimmed = redactText(log).trim();
-  return trimmed.length > ERROR_TAIL_CHARS ? `…${trimmed.slice(-ERROR_TAIL_CHARS)}` : trimmed || "(no output)";
+  return redactedTail(log, ERROR_TAIL_CHARS);
 }
 
 /**
@@ -3745,16 +3741,11 @@ function publicSafeAppUrlLabel(url: string): string {
 }
 
 function digestUrl(url: string): string {
-  return createHash("sha256").update(url).digest("hex").slice(0, 16);
+  return digestText(url, 16);
 }
 
 function readPositiveInt(value: string | undefined, fallback: number): number {
   if (value === undefined) return fallback;
   const parsed = Number.parseInt(value, 10);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function compactError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
 }

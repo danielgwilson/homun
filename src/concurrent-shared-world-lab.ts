@@ -43,6 +43,7 @@ import {
   applyBrowserAdapterHooks
 } from "./adapter-extension.js";
 import { actorRegistry, isCuaActorDescriptor, type CuaActorDescriptor } from "./actor-registry.js";
+import { toErrorMessage } from "./command-failure.js";
 import { mapWithConcurrency } from "./concurrency.js";
 import {
   commandDigestOf,
@@ -197,10 +198,6 @@ interface ActorLaneResult {
   startedAt: number;
   endedAt: number;
   route: string;
-}
-
-function compactError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function readPositiveInt(value: string | undefined, fallback: number): number {
@@ -638,7 +635,7 @@ export async function runConcurrentSharedWorld(options: RunConcurrentSharedWorld
         return { spec, outcome, startedAt, endedAt, route };
       });
     } catch (error) {
-      runError = redactText(scrubKnownValues(compactError(error)));
+      runError = redactText(scrubKnownValues(toErrorMessage(error)));
       warnings.push(`Concurrent shared-world run failed before completion: ${runError}`);
     } finally {
       // FIX-9: stop the prober, take a final snapshot while the subject is still alive, then tear
@@ -657,7 +654,7 @@ export async function runConcurrentSharedWorld(options: RunConcurrentSharedWorld
             await subjectModule.Sandbox.kill(subjectDesktop.sandboxId, { requestTimeoutMs: 60_000 });
             subjectKilled = true;
           } catch (error) {
-            warnings.push(`Subject sandbox teardown failed (server-side kill-on-timeout will reclaim it): ${redactText(scrubKnownValues(compactError(error)))}`);
+            warnings.push(`Subject sandbox teardown failed (server-side kill-on-timeout will reclaim it): ${redactText(scrubKnownValues(toErrorMessage(error)))}`);
           }
         } else {
           warnings.push("Installed @e2b/desktop SDK does not expose Sandbox.kill; server-side kill-on-timeout will reclaim the subject sandbox.");

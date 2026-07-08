@@ -262,6 +262,11 @@ async function readObserverData(
   runRoot: string,
   runtimeStreamUrls: ObserverRuntimeStreamUrl[] = []
 ): Promise<ObserverData | null> {
+  // Best-effort load from either source. Both reads swallow all errors on
+  // purpose: this runs on every browser poll of a live run, where run.json may
+  // be absent, still being written (a partial-JSON parse error), or superseded
+  // by observer-data.json. A transient failure just falls through to the next
+  // source, or to null -> a 404 the poller retries; it must not surface a 500.
   try {
     const bundle = JSON.parse(await readFile(path.join(runRoot, "run.json"), "utf8")) as Parameters<typeof buildObserverData>[0];
     return withRuntimeStreamUrls(buildObserverData(bundle), runtimeStreamUrls);

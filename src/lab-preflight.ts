@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import path from "node:path";
 
 import { CUA_ACTOR_LAB_PROVIDER_METADATA, provisionCloneSubject } from "./cua-actor-lab.js";
@@ -15,7 +14,7 @@ import {
 } from "./lab-config.js";
 import { selectLabBackend, type LabBackend } from "./lab-engine.js";
 import { resolveLabManifest, type LabResolveFailure } from "./labs.js";
-import { redactText } from "./redaction.js";
+import { digestText, redactText } from "./redaction.js";
 
 export const LAB_PREFLIGHT_SCHEMA = "homun.lab-preflight-result.v1";
 
@@ -537,5 +536,5 @@ function originDigest(value: string): { originDigest?: string } {
 }
 
 function digest(value: string): string {
-  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+  return digestText(value, 16);
 }

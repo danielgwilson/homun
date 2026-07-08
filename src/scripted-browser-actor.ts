@@ -424,14 +424,8 @@ export async function captureBrowserSurfaceWithPlaywright(args: {
     } else if (steps.length < args.browserJourney.steps.length) {
       const nextStep = args.browserJourney.steps[steps.length];
       if (nextStep) {
-        // Best-effort blocked-step screenshot: the step is blocked, so the failure
-        // is the evidence. Only reference the path if the best-effort write actually
-        // produced a non-empty file; otherwise omit it so the bundle never claims a
-        // screenshot that does not exist (src/artifact-reference.ts).
-        const screenshotPath = screenshotPathForBrowserStep(args.surface, nextStep);
-        await page?.screenshot({ path: path.join(args.absoluteArtifactRoot, screenshotPath), fullPage: true }).catch(() => undefined);
-        const blockedShotStats = await stat(path.join(args.absoluteArtifactRoot, screenshotPath)).catch(() => null);
-        const blockedShotWritten = Boolean(blockedShotStats?.isFile() && blockedShotStats.size > 0);
+        const { screenshotPath, written: blockedShotWritten } =
+          await captureBlockedStepScreenshot(page, args.absoluteArtifactRoot, args.surface, nextStep);
         steps.push({
           action: nextStep.action,
           completedAt: now,
@@ -697,6 +691,25 @@ function fixtureAssertionsForBrowserStep(step: BrowserPersonaStepManifest, httpO
 
 export function screenshotPathForBrowserStep(surface: BrowserSurface, step: BrowserPersonaStepManifest | undefined): string {
   return path.join("screenshots", `${surface.id}-${step?.id ?? "step"}.png`);
+}
+
+/**
+ * Best-effort screenshot of a blocked step. The step is blocked, so its failure is
+ * the evidence; the shot is a bonus. Returns the relative path plus whether the
+ * write actually produced a non-empty file, so the caller only references the path
+ * when the file truly exists (never claim a screenshot that is not there --
+ * src/artifact-reference.ts).
+ */
+async function captureBlockedStepScreenshot(
+  page: ScriptedPageLike | null,
+  artifactRoot: string,
+  surface: BrowserSurface,
+  step: BrowserPersonaStepManifest
+): Promise<{ screenshotPath: string; written: boolean }> {
+  const screenshotPath = screenshotPathForBrowserStep(surface, step);
+  await page?.screenshot({ path: path.join(artifactRoot, screenshotPath), fullPage: true }).catch(() => undefined);
+  const stats = await stat(path.join(artifactRoot, screenshotPath)).catch(() => null);
+  return { screenshotPath, written: Boolean(stats?.isFile() && stats.size > 0) };
 }
 
 /**
@@ -1396,12 +1409,8 @@ async function runScriptedJourney(args: {
     } else if (steps.length < args.journey.steps.length) {
       const nextStep = args.journey.steps[steps.length];
       if (nextStep) {
-        // Best-effort blocked-step screenshot: only reference it if the write
-        // actually produced a non-empty file (src/artifact-reference.ts).
-        const screenshotPath = screenshotPathForBrowserStep(args.surface, nextStep);
-        await page?.screenshot({ path: path.join(args.artifactRoot, screenshotPath), fullPage: true }).catch(() => undefined);
-        const blockedShotStats = await stat(path.join(args.artifactRoot, screenshotPath)).catch(() => null);
-        const blockedShotWritten = Boolean(blockedShotStats?.isFile() && blockedShotStats.size > 0);
+        const { screenshotPath, written: blockedShotWritten } =
+          await captureBlockedStepScreenshot(page, args.artifactRoot, args.surface, nextStep);
         steps.push({
           action: nextStep.action,
           completedAt: now,
