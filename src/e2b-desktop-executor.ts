@@ -1,6 +1,6 @@
 import { PNG } from "pngjs";
 
-import { commandFailureInfo } from "./command-failure.js";
+import { commandFailureInfo, tailOf } from "./command-failure.js";
 import type { CuaAction, CuaExecutor, CuaObservation } from "./computer-use.js";
 
 // The DESKTOP side of the computer-use loop: a CuaExecutor (from
@@ -113,10 +113,6 @@ function toBuffer(bytes: Uint8Array | Buffer): Buffer {
 
 function shellSingleQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-function tailOf(value: string | undefined): string {
-  return (value ?? "").trim().replace(/\s+/g, " ").slice(-240);
 }
 
 /**
