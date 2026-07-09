@@ -30,6 +30,7 @@ interface RecordedCreate {
 interface RecordedRun {
   command: string;
   envs?: Record<string, string>;
+  timeoutMs?: number;
 }
 
 function makeFakeModule(opts: {
@@ -38,6 +39,13 @@ function makeFakeModule(opts: {
   runs: RecordedRun[];
   killed: string[];
   listRemaining?: () => number; // sandboxes still listed after kill (default 0 = proven reclaimed)
+  /**
+   * Throws a CommandExitError-shaped error (real-SDK-accurate: the real @e2b/desktop Sandbox
+   * throws on any non-zero exit rather than returning one) for the runtime-bootstrap command.
+   * Mirrors tests/cua-actor-lab.test.ts's makeFakeSandbox convention, so the bootstrap-failure
+   * path is covered by the THROWING shape, not just a structural non-zero return.
+   */
+  bootstrapThrow?: (command: string) => { exitCode?: number; stderr?: string; message?: string } | undefined;
 }) {
   let counter = 0;
   return {
@@ -55,14 +63,33 @@ function makeFakeModule(opts: {
         return {
           sandboxId,
           commands: {
-            async run(command: string, runOptions?: { envs?: Record<string, string>; onStdout?: (d: string) => void }) {
-              const rec: RecordedRun = { command, ...(runOptions?.envs ? { envs: runOptions.envs } : {}) };
+            async run(
+              command: string,
+              runOptions?: { envs?: Record<string, string>; timeoutMs?: number; onStdout?: (d: string) => void }
+            ) {
+              const rec: RecordedRun = {
+                command,
+                ...(runOptions?.envs ? { envs: runOptions.envs } : {}),
+                ...(runOptions?.timeoutMs === undefined ? {} : { timeoutMs: runOptions.timeoutMs })
+              };
               opts.runs.push(rec);
               if (command.includes("codex")) {
                 const behavior = opts.codexBehavior(command, rec);
                 if (behavior.emit && runOptions?.onStdout) behavior.emit(runOptions.onStdout);
                 else if (behavior.stdout && runOptions?.onStdout) runOptions.onStdout(behavior.stdout);
                 return { exitCode: behavior.exitCode };
+              }
+              if (command.includes("nodesource.com")) {
+                // The UNKEYED runtime-bootstrap command (ensure Node/npm before the keyed exec).
+                const thrown = opts.bootstrapThrow?.(command);
+                if (thrown) {
+                  throw Object.assign(new Error(thrown.message ?? `exit status ${thrown.exitCode ?? 1}`), {
+                    name: "CommandExitError",
+                    ...(thrown.exitCode === undefined ? {} : { exitCode: thrown.exitCode }),
+                    ...(thrown.stderr === undefined ? {} : { stderr: thrown.stderr })
+                  });
+                }
+                return { exitCode: 0, stdout: "" };
               }
               // readiness probe
               if (runOptions?.onStdout) runOptions.onStdout("HOMUN_SHELL_READY\n");
@@ -178,8 +205,16 @@ describe("runTerminalProductLab (live path, deterministic, no spend)", () => {
 
     // The codex command run carried the key in its OWN envs (command-scoped) — and ONLY the runtime key.
     const codexRun = runs.find((r) => r.command.includes("codex"));
+    // Pinned via npx, never an ambient/preinstalled `codex` binary (issue #159).
+    expect(codexRun?.command).toContain("npx -y @openai/codex@latest exec");
+    expect(codexRun?.command).not.toContain("codex exec"); // never the bare ambient-binary form
+    // codex's inner sandbox is bypassed: the E2B sandbox is the trust boundary.
+    expect(codexRun?.command).toContain("--dangerously-bypass-approvals-and-sandbox");
+    // Preference order: only OPENAI_API_KEY was set, so its value is injected under BOTH names,
+    // so codex exec's documented single-invocation auth channel (CODEX_API_KEY) is populated too.
     expect(codexRun?.envs?.OPENAI_API_KEY).toBe(FAKE_RUNTIME_KEY);
-    expect(Object.keys(codexRun?.envs ?? {})).toEqual(["OPENAI_API_KEY"]);
+    expect(codexRun?.envs?.CODEX_API_KEY).toBe(FAKE_RUNTIME_KEY);
+    expect(Object.keys(codexRun?.envs ?? {}).slice().sort()).toEqual(["CODEX_API_KEY", "OPENAI_API_KEY"]);
     // Deny-by-default: no banned credential reached the command envs.
     expect(codexRun?.envs).not.toHaveProperty("GITHUB_TOKEN");
     expect(codexRun?.envs).not.toHaveProperty("DATABASE_URL");
@@ -209,6 +244,80 @@ describe("runTerminalProductLab (live path, deterministic, no spend)", () => {
     const ledgers = JSON.parse(await readFile(path.join(runDir, "terminal-ledgers.json"), "utf8"));
     expect(Array.isArray(ledgers.interventions)).toBe(true);
     expect(ledgers.interventions.length).toBe(0);
+    expect(ledgers.cleanup.killed).toBe(true);
+    // The recorded env-name metadata lists exactly the names actually injected.
+    const codexEntry = ledgers.commandLog.find((entry: { label: string }) => entry.label === "codex-exec");
+    expect(codexEntry?.envNames.slice().sort()).toEqual(["CODEX_API_KEY", "OPENAI_API_KEY"]);
+  });
+
+  it("runs the runtime bootstrap UNKEYED, before the keyed codex exec, with an explicit generous timeout", async () => {
+    const creates: RecordedCreate[] = [];
+    const runs: RecordedRun[] = [];
+    const killed: string[] = [];
+    const hooks: TerminalProductLabHooks = {
+      env: baseEnv(),
+      now: () => 4_000,
+      loadModule: async () => makeFakeModule({
+        creates, runs, killed,
+        codexBehavior: (cmd) => ({ exitCode: 0, stdout: `HOMUN_ACTOR_VERDICT=passed HOMUN_ACTOR_NONCE=${nonceFrom(cmd)}\n` })
+      })
+    };
+    const result = await runTerminalProductLab({ cwd, config: liveConfig(), dryRun: false, open: false, hooks });
+
+    const readinessIndex = runs.findIndex((r) => r.command.includes("HOMUN_SHELL_READY"));
+    const bootstrapIndex = runs.findIndex((r) => r.command.includes("nodesource.com"));
+    const codexIndex = runs.findIndex((r) => r.command.includes("codex"));
+    expect(readinessIndex).toBeGreaterThanOrEqual(0);
+    expect(bootstrapIndex).toBeGreaterThan(readinessIndex);
+    expect(codexIndex).toBeGreaterThan(bootstrapIndex);
+
+    // UNKEYED: the runtime-bootstrap command carries no envs at all (no runtime key touches it).
+    expect(runs[bootstrapIndex]?.envs).toBeUndefined();
+    // Explicit generous timeout: the SDK's commands.run default (60s) is far too short for an apt install.
+    expect(runs[bootstrapIndex]?.timeoutMs).toBe(300_000);
+
+    expect(result.session?.status).toBe("passed");
+    const ledgers = JSON.parse(await readFile(path.join(cwd, ".homun", "runs", result.runId, "terminal-ledgers.json"), "utf8"));
+    const bootstrapEvent = ledgers.lifecycle.find((entry: { event: string }) => entry.event === "terminal-lab.runtime.bootstrapped");
+    expect(bootstrapEvent).toBeDefined();
+    expect(String(bootstrapEvent?.message)).not.toMatch(/FAILED/);
+  });
+
+  it("fails the lane closed via a structured error (not a raw throw) when the runtime bootstrap command throws a CommandExitError", async () => {
+    const creates: RecordedCreate[] = [];
+    const runs: RecordedRun[] = [];
+    const killed: string[] = [];
+    const hooks: TerminalProductLabHooks = {
+      env: baseEnv(),
+      now: () => 5_000,
+      loadModule: async () => makeFakeModule({
+        creates, runs, killed,
+        // If this ever runs, the lane failed to fail closed on the bootstrap error first.
+        codexBehavior: () => ({ exitCode: 0, stdout: "HOMUN_ACTOR_VERDICT=passed HOMUN_ACTOR_NONCE=should-not-run\n" }),
+        // Real-SDK-accurate: the real @e2b/desktop Sandbox THROWS a CommandExitError on a
+        // non-zero exit rather than returning one; cover the THROWING shape, not just a
+        // structural non-zero return.
+        bootstrapThrow: () => ({ exitCode: 1, stderr: "sudo: a password is required" })
+      })
+    };
+    const result = await runTerminalProductLab({ cwd, config: liveConfig(), dryRun: false, open: false, hooks });
+
+    // The keyed exec is NEVER attempted once the runtime bootstrap has failed.
+    expect(runs.some((r) => r.command.includes("codex"))).toBe(false);
+
+    // Fails closed as a structured lane result: the run completes (no unhandled throw escapes
+    // the lane), is recorded as a harness error, and cleanup still runs.
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe("HOMUN_TERMINAL_LAB_FAILED");
+    expect(result.session?.status).toBe("failed");
+    expect(result.session?.completionReason).toBe("harness_error");
+    expect(killed.length).toBe(1);
+
+    const runDir = path.join(cwd, ".homun", "runs", result.runId);
+    const ledgers = JSON.parse(await readFile(path.join(runDir, "terminal-ledgers.json"), "utf8"));
+    const bootstrapEvent = ledgers.lifecycle.find((entry: { event: string }) => entry.event === "terminal-lab.runtime.bootstrapped");
+    expect(bootstrapEvent).toBeDefined();
+    expect(String(bootstrapEvent?.message)).toMatch(/FAILED/);
     expect(ledgers.cleanup.killed).toBe(true);
   });
 
@@ -263,5 +372,73 @@ describe("runTerminalProductLab (live path, deterministic, no spend)", () => {
     const result = await runTerminalProductLab({ cwd, config: liveConfig(), dryRun: false, open: false, hooks });
     expect(result.ok).toBe(false);
     expect(result.error?.code).toBe("HOMUN_TERMINAL_LAB_CLEANUP_UNPROVEN");
+  });
+});
+
+describe("runtime-auth key allowlist preference (CODEX_API_KEY over OPENAI_API_KEY)", () => {
+  let cwd: string;
+  beforeEach(async () => { cwd = await mkdtemp(path.join(tmpdir(), "homun-tp-live-authorder-")); });
+  afterEach(async () => { await rm(cwd, { recursive: true, force: true }); });
+
+  it("injects CODEX_API_KEY alone when only CODEX_API_KEY is set", async () => {
+    const creates: RecordedCreate[] = [];
+    const runs: RecordedRun[] = [];
+    const killed: string[] = [];
+    const env = baseEnv();
+    delete env.OPENAI_API_KEY;
+    env.CODEX_API_KEY = FAKE_RUNTIME_KEY;
+    const hooks: TerminalProductLabHooks = {
+      env,
+      now: () => 6_000,
+      loadModule: async () => makeFakeModule({
+        creates, runs, killed,
+        codexBehavior: (cmd) => ({ exitCode: 0, stdout: `HOMUN_ACTOR_VERDICT=passed HOMUN_ACTOR_NONCE=${nonceFrom(cmd)}\n` })
+      })
+    };
+    const result = await runTerminalProductLab({ cwd, config: liveConfig(), dryRun: false, open: false, hooks });
+    const codexRun = runs.find((r) => r.command.includes("codex"));
+    expect(codexRun?.envs).toEqual({ CODEX_API_KEY: FAKE_RUNTIME_KEY });
+    const ledgers = JSON.parse(await readFile(path.join(cwd, ".homun", "runs", result.runId, "terminal-ledgers.json"), "utf8"));
+    expect(ledgers.commandLog[0]?.envNames).toEqual(["CODEX_API_KEY"]);
+  });
+
+  it("injects the value under BOTH CODEX_API_KEY and OPENAI_API_KEY when only OPENAI_API_KEY is set", async () => {
+    const creates: RecordedCreate[] = [];
+    const runs: RecordedRun[] = [];
+    const killed: string[] = [];
+    const hooks: TerminalProductLabHooks = {
+      env: baseEnv(), // OPENAI_API_KEY only, no CODEX_API_KEY
+      now: () => 7_000,
+      loadModule: async () => makeFakeModule({
+        creates, runs, killed,
+        codexBehavior: (cmd) => ({ exitCode: 0, stdout: `HOMUN_ACTOR_VERDICT=passed HOMUN_ACTOR_NONCE=${nonceFrom(cmd)}\n` })
+      })
+    };
+    const result = await runTerminalProductLab({ cwd, config: liveConfig(), dryRun: false, open: false, hooks });
+    const codexRun = runs.find((r) => r.command.includes("codex"));
+    expect(codexRun?.envs).toEqual({ CODEX_API_KEY: FAKE_RUNTIME_KEY, OPENAI_API_KEY: FAKE_RUNTIME_KEY });
+    const ledgers = JSON.parse(await readFile(path.join(cwd, ".homun", "runs", result.runId, "terminal-ledgers.json"), "utf8"));
+    expect(ledgers.commandLog[0]?.envNames.slice().sort()).toEqual(["CODEX_API_KEY", "OPENAI_API_KEY"]);
+  });
+
+  it("prefers CODEX_API_KEY's value when both CODEX_API_KEY and OPENAI_API_KEY are set", async () => {
+    const creates: RecordedCreate[] = [];
+    const runs: RecordedRun[] = [];
+    const killed: string[] = [];
+    const env = baseEnv();
+    env.CODEX_API_KEY = "FAKEKEY-codex-wins-0000000000000000";
+    const hooks: TerminalProductLabHooks = {
+      env,
+      now: () => 8_000,
+      loadModule: async () => makeFakeModule({
+        creates, runs, killed,
+        codexBehavior: (cmd) => ({ exitCode: 0, stdout: `HOMUN_ACTOR_VERDICT=passed HOMUN_ACTOR_NONCE=${nonceFrom(cmd)}\n` })
+      })
+    };
+    const result = await runTerminalProductLab({ cwd, config: liveConfig(), dryRun: false, open: false, hooks });
+    const codexRun = runs.find((r) => r.command.includes("codex"));
+    expect(codexRun?.envs).toEqual({ CODEX_API_KEY: "FAKEKEY-codex-wins-0000000000000000" });
+    const ledgers = JSON.parse(await readFile(path.join(cwd, ".homun", "runs", result.runId, "terminal-ledgers.json"), "utf8"));
+    expect(ledgers.commandLog[0]?.envNames).toEqual(["CODEX_API_KEY"]);
   });
 });
