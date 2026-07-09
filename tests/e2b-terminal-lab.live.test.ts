@@ -14,14 +14,17 @@ import { verifyRun } from "../src/run.js";
 // gated EXACTLY like the other live rungs (never run in CI) and kept as a receipt by the
 // orchestrator post-merge:
 //   1. HOMUN_LIVE_CODEX=1 must be set explicitly (the live opt-in);
-//   2. OPENAI_API_KEY and E2B_API_KEY must both be present (operator-side; the runtime key is
-//      injected ONLY into the command-scoped codex invocation, never sandbox-global);
+//   2. CODEX_API_KEY or OPENAI_API_KEY, plus E2B_API_KEY, must be present (operator-side; the
+//      runtime key is injected ONLY into the command-scoped codex invocation, never
+//      sandbox-global). CODEX_API_KEY is preferred (it is the documented single-invocation
+//      `codex exec` auth channel); when only OPENAI_API_KEY is set, the lane injects its value
+//      under BOTH names, so either is sufficient here too.
 //   3. @e2b/desktop is the lazily-loaded substrate.
 // Asserts the safety contract holds against a real agent: real sandbox created + reclaimed,
 // runtime auth command-scoped (never in metadata), no banned creds in artifacts, the bundle
 // verifies (incl. the terminal-product evidence check). NEVER asserts task success.
 const LIVE = process.env.HOMUN_LIVE_CODEX === "1"
-  && Boolean(process.env.OPENAI_API_KEY)
+  && (Boolean(process.env.CODEX_API_KEY) || Boolean(process.env.OPENAI_API_KEY))
   && Boolean(process.env.E2B_API_KEY);
 
 function liveConfig(): LabConfig {
@@ -79,12 +82,17 @@ describe.skipIf(!LIVE)("terminal-product lane (LIVE, key-gated, E2B + Codex)", (
     expect(verified.ok).toBe(true);
     expect(verified.checks.find((c) => c.name === "terminal-product evidence")?.ok).toBe(true);
 
-    // No credential VALUE in evidence: the real OPENAI_API_KEY value never appears in any artifact.
+    // No credential VALUE in evidence: neither real key (whichever the operator exported, or both
+    // if the lane dual-injected OPENAI_API_KEY under CODEX_API_KEY too) ever appears in any artifact.
     const runDir = path.join(cwd, ".homun", "runs", result.runId);
-    const realKey = (process.env.OPENAI_API_KEY ?? "").trim();
+    const realKeys = [process.env.CODEX_API_KEY, process.env.OPENAI_API_KEY]
+      .map((value) => (value ?? "").trim())
+      .filter((value) => value.length >= 8);
     for (const file of ["run.json", "terminal-events.ndjson", "terminal-transcript.txt", "terminal-ledgers.json", "actor.json"]) {
       const text = await readFile(path.join(runDir, file), "utf8");
-      if (realKey.length >= 8) expect(text.includes(realKey)).toBe(false);
+      for (const realKey of realKeys) {
+        expect(text.includes(realKey)).toBe(false);
+      }
     }
     // Interventions ledger present + empty (stdin disabled, no assisted input).
     const ledgers = JSON.parse(await readFile(path.join(runDir, "terminal-ledgers.json"), "utf8"));

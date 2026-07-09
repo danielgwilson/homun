@@ -87,6 +87,24 @@ const SANDBOX_WORKDIR = "/home/user/study";
 // Server-side reclamation buffer past the codex command's own wall-clock (caps.maxMinutes) kill.
 const SANDBOX_TIMEOUT_BUFFER_MS = 5 * 60_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+// The runtime-bootstrap step (ensure Node/npm) can run an apt-get install; the SDK's commands.run
+// timeoutMs default (60s) is far too short for that, so this step gets an explicit generous budget.
+const RUNTIME_BOOTSTRAP_TIMEOUT_MS = 300_000;
+// UNKEYED (no envs) shell command that ensures Node/npm are present before the keyed codex exec.
+// Reuses the oss-meta-lab.ts ensure_node() shape: check node's major version, else install
+// Node 22 via NodeSource plus passwordless sudo (the stock @e2b/desktop image ships neither codex
+// nor a recent Node, per issue #159). A final presence check makes the whole command exit non-zero
+// (so the bootstrap step fails closed) if the install still leaves node/npm missing.
+const RUNTIME_BOOTSTRAP_COMMAND = [
+  `node_major=0`,
+  `if command -v node >/dev/null 2>&1; then node_major=$(node -e 'console.log(Number(process.versions.node.split(".")[0]))' 2>/dev/null || echo 0); fi`,
+  `if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 && [ "$node_major" -ge 20 ]; then exit 0; fi`,
+  `sudo -n apt-get update`,
+  `sudo -n apt-get install -y ca-certificates curl gnupg`,
+  `curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -n -E bash -`,
+  `sudo -n apt-get install -y nodejs`,
+  `command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1`
+].join(" && ");
 // How much of a captured stream / log tail rides a (redacted) message field.
 const TAIL_CHARS = 2000;
 // Hard cap on the retained event-stream + transcript size, so a runaway agent cannot balloon the
@@ -662,7 +680,7 @@ function roundUsd(value: number): number {
 /**
  * Build the per-command runtime-auth env from a DENY-BY-DEFAULT ALLOWLIST containing ONLY the
  * declared runtime key (safety contract item 4). The key NAME is derived from the actor's
- * keyPlacement capability + the declared runtimeAuth channel — NOT a hardcoded string the caller
+ * keyPlacement capability plus the declared runtimeAuth channel, not a hardcoded string the caller
  * can widen. Banned credential names (GitHub/payment/deploy/db/media) are excluded by construction
  * AND guarded: if a banned name is ever requested the lane fails closed. Returns the allowlisted
  * env (values from `env`) and the resolved key name, or a structured failure.
@@ -678,16 +696,25 @@ function buildCommandScopedRuntimeEnv(args: {
 }):
   | { ok: true; envs: Record<string, string>; keyName: string; keyValue: string }
   | { ok: false; code: "HOMUN_TERMINAL_LAB_RUNTIME_AUTH_MISSING" | "HOMUN_TERMINAL_LAB_CREDENTIAL_DENIED"; message: string } {
-  // The "openai-env" channel declares OPENAI_API_KEY (preferred) or CODEX_API_KEY as the runtime
-  // key. The ALLOWLIST is exactly these names; everything else is denied by construction.
-  const ALLOWED_RUNTIME_KEY_NAMES = ["OPENAI_API_KEY", "CODEX_API_KEY"] as const;
+  // The "openai-env" channel accepts CODEX_API_KEY or OPENAI_API_KEY as the runtime key SOURCE
+  // name, read in this preference order. CODEX_API_KEY is preferred: the official Codex docs
+  // (developers.openai.com/codex/noninteractive) document it as the channel for a SINGLE codex exec
+  // invocation, which is exactly this lane's shape (no persisted auth.json/CODEX_HOME, per-command
+  // envs only). A dated in-repo receipt
+  // (docs/goals/homun-recursive-proof-critical-point/receipts/actor-required-attempt.md) shows a
+  // job-wide OPENAI_API_KEY alone failing bearer auth for this same pinned-exec pattern. When the
+  // operator only exported OPENAI_API_KEY, its value is ALSO injected under CODEX_API_KEY below, so
+  // the documented exec auth channel is always populated regardless of which name the operator
+  // used. The ALLOWLIST is exactly these two names; everything else is denied by construction.
+  const ALLOWED_RUNTIME_KEY_NAMES = ["CODEX_API_KEY", "OPENAI_API_KEY"] as const;
   // Tripwire (safety contract item 4): if a FUTURE widening of ALLOWED_RUNTIME_KEY_NAMES ever
   // added a clearly-non-runtime credential (a GitHub/payment/deploy/db secret), fail closed. The
-  // generic `*_KEY` shape is deliberately NOT a tripwire here — a runtime key legitimately ends in
-  // _KEY (OPENAI_API_KEY), so testing it against the generic shape would false-positive on the very
-  // key this lane exists to inject. The positive allowlist itself is the real boundary: the command
-  // env is built from exactly these names and nothing else (so GITHUB_TOKEN/payment/db keys present
-  // in the operator env are never forwarded — proven by the deterministic test).
+  // generic `*_KEY` shape is deliberately NOT a tripwire here, since a runtime key legitimately
+  // ends in _KEY (CODEX_API_KEY/OPENAI_API_KEY), so testing it against the generic shape would
+  // false-positive on the very key this lane exists to inject. The positive allowlist itself is
+  // the real boundary: the command env is built from exactly these names and nothing else (so
+  // GITHUB_TOKEN/payment/db keys present in the operator env are never forwarded, proven by the
+  // deterministic test).
   if (ALLOWED_RUNTIME_KEY_NAMES.some((name) => isNonRuntimeCredentialName(name))) {
     return {
       ok: false,
@@ -703,20 +730,25 @@ function buildCommandScopedRuntimeEnv(args: {
       message: `Live terminal-product labs declare runtimeAuth "${String(args.runtimeAuth)}" and need ${ALLOWED_RUNTIME_KEY_NAMES.join(" or ")} in the environment (pass via --env-file; the value is injected ONLY into the command-scoped codex invocation and is never persisted).`
     };
   }
+  const keyValue = args.env[keyName] as string;
+  // The command-scoped env is the ALLOWLIST: exactly the runtime key name(s), nothing else. No
+  // GITHUB_TOKEN/GH_TOKEN, no payment/deploy/db/media key, excluded by construction. When the
+  // SOURCE was OPENAI_API_KEY, the SAME value is also injected as CODEX_API_KEY so codex exec's
+  // documented single-invocation auth channel is populated either way (see the comment above).
+  const envs: Record<string, string> =
+    keyName === "OPENAI_API_KEY" ? { CODEX_API_KEY: keyValue, OPENAI_API_KEY: keyValue } : { [keyName]: keyValue };
   return {
     ok: true,
-    // The command-scoped env is the ALLOWLIST: exactly the one runtime key, nothing else. No
-    // GITHUB_TOKEN/GH_TOKEN, no payment/deploy/db/media key — excluded by construction.
-    envs: { [keyName]: args.env[keyName] as string },
+    envs,
     keyName,
-    keyValue: args.env[keyName] as string
+    keyValue
   };
 }
 
 // Clearly-non-runtime credential NAME shapes. Used as the runtime-key allowlist tripwire (a
 // runtime key must never be one of these). Deliberately EXCLUDES the generic `*_KEY` shape: the
-// runtime key this lane injects (OPENAI_API_KEY/CODEX_API_KEY) legitimately ends in _KEY, so the
-// generic shape would false-positive on it. The positive allowlist — not a denylist — is what
+// runtime key this lane injects (CODEX_API_KEY/OPENAI_API_KEY) legitimately ends in _KEY, so the
+// generic shape would false-positive on it. The positive allowlist, not a denylist, is what
 // keeps every OTHER operator-env credential (GitHub/payment/deploy/db/media keys) out of the
 // sandbox: the command env is built from exactly the allowlisted runtime key and nothing else.
 const NON_RUNTIME_CREDENTIAL_NAME_PATTERNS: RegExp[] = [
@@ -918,84 +950,122 @@ async function runLiveTerminalSession(args: RunLiveTerminalSessionArgs): Promise
     const ready = await sandbox.commands.run(`mkdir -p ${SANDBOX_WORKDIR} && echo HOMUN_SHELL_READY`, { requestTimeoutMs });
     recordLifecycle("terminal-lab.sandbox.ready", `Shell readiness probe exit=${ready.exitCode ?? "null"}; workdir ${SANDBOX_WORKDIR} prepared.`);
 
-    // --- The keyed run: `codex exec --json` non-interactively (stdin disabled). ---
-    // The runtime key is injected ONLY here, command-scoped (safety contract item 1). stdin is
-    // never wired (safety contract item 7) — commands.run takes no stdin channel. The command's
-    // wall-clock is bounded by maxMinutes (safety contract item 2): commands.run timeoutMs +
-    // an injected-clock guard so a mock/real run that exceeds it is killed and fails closed.
-    const codexCommand = buildCodexExecCommand({ workdir: SANDBOX_WORKDIR, prompt: composedPrompt });
-    const commandDigest = digestText(codexCommand);
-    const startedAt = now();
-    recordLifecycle("terminal-lab.exec.started", `Launching codex exec (command-scoped runtime key ${runtimeEnv.keyName}); wall-clock bound ${wallClockMs}ms.`);
-
-    let exitCode: number | undefined;
-    let runError: string | undefined;
+    // --- Runtime bootstrap: ensure Node/npm are present (UNKEYED, no envs) before the keyed exec. ---
+    // The stock @e2b/desktop image does not ship a recent Node (issue #159); codex is now invoked
+    // via `npx` (buildCodexExecCommand), which needs Node/npm on PATH. Reuses the proven
+    // oss-meta-lab.ts ensure_node() shape: a node major-version check, else install Node 22 via
+    // NodeSource plus passwordless sudo. UNKEYED: no runtime key touches this step. An apt-get
+    // install can exceed the SDK's default 60s commands.run timeout, so this step gets an
+    // explicit, generous timeoutMs (requestTimeoutMs is passed through unchanged, as everywhere else).
+    const bootstrapStartedAt = now();
+    let bootstrapError: string | undefined;
     try {
-      const result = await runWithWallClock(
-        sandbox.commands.run(codexCommand, {
-          envs: runtimeEnv.envs, // <-- THE command-scoped key channel. The ONLY place the key goes.
-          requestTimeoutMs,
-          timeoutMs: wallClockMs,
-          onStdout: (data: string) => appendTerminalChunk("stdout", data),
-          onStderr: (data: string) => appendTerminalChunk("stderr", data)
-        }),
-        wallClockMs,
-        now
-      );
-      if (result.timedOut) {
-        timedOut = true;
-      } else {
-        exitCode = result.value.exitCode;
-        // Some SDK shapes return final stdout/stderr in the result too (not only via callbacks).
-        if (result.value.stdout) appendTerminalChunk("stdout", result.value.stdout);
-        if (result.value.stderr) appendTerminalChunk("stderr", result.value.stderr);
-        if (result.value.error) runError = result.value.error;
+      const bootstrap = await sandbox.commands.run(RUNTIME_BOOTSTRAP_COMMAND, {
+        requestTimeoutMs,
+        timeoutMs: RUNTIME_BOOTSTRAP_TIMEOUT_MS
+      });
+      if ((bootstrap.exitCode ?? 1) !== 0) {
+        bootstrapError = `runtime bootstrap exited ${bootstrap.exitCode ?? "null"}`;
       }
     } catch (error) {
-      runError = toErrorMessage(error);
+      bootstrapError = toErrorMessage(error);
     }
-    const durationMs = Math.max(0, now() - startedAt);
+    const bootstrapDurationMs = Math.max(0, now() - bootstrapStartedAt);
+    recordLifecycle(
+      "terminal-lab.runtime.bootstrapped",
+      bootstrapError
+        ? `Runtime bootstrap FAILED after ${bootstrapDurationMs}ms: ${bootstrapError}. codex exec runs via npx and needs Node/npm present; the lane fails closed rather than attempting an exec with no runtime.`
+        : `Runtime bootstrap ensured Node/npm present in ${bootstrapDurationMs}ms (codex exec runs via npx).`
+    );
 
-    commandLog.push({
-      at: nowIso(),
-      label: "codex-exec",
-      commandDigest,
-      envNames: Object.keys(runtimeEnv.envs), // NAMES only — the credential evidence (item 4).
-      ...(exitCode === undefined ? {} : { exitCode }),
-      ...(timedOut ? { timedOut: true } : {}),
-      durationMs
-    });
-
-    // Score by the verdict-nonce marker over the SCRUBBED+REDACTED, NORMALIZED transcript — the
-    // exact same logic the local-actor lanes use (extractLocalActorVerdict/normalizeLocalActorTranscript).
-    const rawTranscript = terminalEvents.map((e) => e.chunk).join("");
-    const normalizedTranscript = normalizeLocalActorTranscript(rawTranscript);
-    const markerStatus = extractLocalActorVerdict(normalizedTranscript, verdictNonce);
-
-    if (timedOut) {
-      sessionStatus = "timed_out";
-      completionReason = "timed_out";
-      sessionReason = `codex exec exceeded the maxMinutes wall-clock (${maxMinutes}m); killed and failed closed.`;
-      recordLifecycle("terminal-lab.exec.timed_out", sessionReason);
-    } else if (runError) {
+    if (bootstrapError) {
+      // Fail closed as a structured lane status (never a raw throw): no codex exec is attempted
+      // without a proven runtime; this mirrors the exec-error status assignment below so the
+      // bundle and verify surface the failure the same way.
       sessionStatus = "failed";
       completionReason = "harness_error";
-      sessionError = sanitize(runError);
-      sessionReason = `codex exec could not run: ${sessionError}`;
-      recordLifecycle("terminal-lab.exec.error", sessionReason);
-    } else if (markerStatus) {
-      sessionStatus = markerStatus;
-      completionReason = markerStatus === "passed" ? "goal_satisfied" : markerStatus === "blocked" ? "blocked_approval" : "gave_up";
-      sessionReason = `agent reported ${markerStatus} verdict marker (nonce-verified)`;
-      recordLifecycle("terminal-lab.exec.completed", `codex exec exit=${exitCode ?? "null"}; ${sessionReason}.`);
+      sessionError = sanitize(bootstrapError);
+      sessionReason = `runtime bootstrap could not ensure Node/npm before codex exec: ${sessionError}`;
     } else {
-      // No nonce-verified verdict: the agent did not (credibly) report a terminal status. A run
-      // that exited 0 but printed no verified marker is BLOCKED evidence (the failure IS the
-      // evidence — still structurally verifiable), not a silent pass.
-      sessionStatus = "blocked";
-      completionReason = "gave_up";
-      sessionReason = `codex exec exit=${exitCode ?? "null"} but no nonce-verified HOMUN_ACTOR_VERDICT marker was emitted; recorded as blocked (the missing verdict is the evidence).`;
-      recordLifecycle("terminal-lab.exec.blocked", sessionReason);
+      // --- The keyed run: `codex exec --json` non-interactively (stdin disabled). ---
+      // The runtime key is injected ONLY here, command-scoped (safety contract item 1). stdin is
+      // never wired (safety contract item 7) — commands.run takes no stdin channel. The command's
+      // wall-clock is bounded by maxMinutes (safety contract item 2): commands.run timeoutMs +
+      // an injected-clock guard so a mock/real run that exceeds it is killed and fails closed.
+      const codexCommand = buildCodexExecCommand({ workdir: SANDBOX_WORKDIR, prompt: composedPrompt });
+      const commandDigest = digestText(codexCommand);
+      const startedAt = now();
+      recordLifecycle("terminal-lab.exec.started", `Launching codex exec (command-scoped runtime key ${runtimeEnv.keyName}); wall-clock bound ${wallClockMs}ms.`);
+
+      let exitCode: number | undefined;
+      let runError: string | undefined;
+      try {
+        const result = await runWithWallClock(
+          sandbox.commands.run(codexCommand, {
+            envs: runtimeEnv.envs, // <-- THE command-scoped key channel. The ONLY place the key goes.
+            requestTimeoutMs,
+            timeoutMs: wallClockMs,
+            onStdout: (data: string) => appendTerminalChunk("stdout", data),
+            onStderr: (data: string) => appendTerminalChunk("stderr", data)
+          }),
+          wallClockMs,
+          now
+        );
+        if (result.timedOut) {
+          timedOut = true;
+        } else {
+          exitCode = result.value.exitCode;
+          // Some SDK shapes return final stdout/stderr in the result too (not only via callbacks).
+          if (result.value.stdout) appendTerminalChunk("stdout", result.value.stdout);
+          if (result.value.stderr) appendTerminalChunk("stderr", result.value.stderr);
+          if (result.value.error) runError = result.value.error;
+        }
+      } catch (error) {
+        runError = toErrorMessage(error);
+      }
+      const durationMs = Math.max(0, now() - startedAt);
+
+      commandLog.push({
+        at: nowIso(),
+        label: "codex-exec",
+        commandDigest,
+        envNames: Object.keys(runtimeEnv.envs), // NAMES only — the credential evidence (item 4).
+        ...(exitCode === undefined ? {} : { exitCode }),
+        ...(timedOut ? { timedOut: true } : {}),
+        durationMs
+      });
+
+      // Score by the verdict-nonce marker over the SCRUBBED+REDACTED, NORMALIZED transcript — the
+      // exact same logic the local-actor lanes use (extractLocalActorVerdict/normalizeLocalActorTranscript).
+      const rawTranscript = terminalEvents.map((e) => e.chunk).join("");
+      const normalizedTranscript = normalizeLocalActorTranscript(rawTranscript);
+      const markerStatus = extractLocalActorVerdict(normalizedTranscript, verdictNonce);
+
+      if (timedOut) {
+        sessionStatus = "timed_out";
+        completionReason = "timed_out";
+        sessionReason = `codex exec exceeded the maxMinutes wall-clock (${maxMinutes}m); killed and failed closed.`;
+        recordLifecycle("terminal-lab.exec.timed_out", sessionReason);
+      } else if (runError) {
+        sessionStatus = "failed";
+        completionReason = "harness_error";
+        sessionError = sanitize(runError);
+        sessionReason = `codex exec could not run: ${sessionError}`;
+        recordLifecycle("terminal-lab.exec.error", sessionReason);
+      } else if (markerStatus) {
+        sessionStatus = markerStatus;
+        completionReason = markerStatus === "passed" ? "goal_satisfied" : markerStatus === "blocked" ? "blocked_approval" : "gave_up";
+        sessionReason = `agent reported ${markerStatus} verdict marker (nonce-verified)`;
+        recordLifecycle("terminal-lab.exec.completed", `codex exec exit=${exitCode ?? "null"}; ${sessionReason}.`);
+      } else {
+        // No nonce-verified verdict: the agent did not (credibly) report a terminal status. A run
+        // that exited 0 but printed no verified marker is BLOCKED evidence (the failure IS the
+        // evidence — still structurally verifiable), not a silent pass.
+        sessionStatus = "blocked";
+        completionReason = "gave_up";
+        sessionReason = `codex exec exit=${exitCode ?? "null"} but no nonce-verified HOMUN_ACTOR_VERDICT marker was emitted; recorded as blocked (the missing verdict is the evidence).`;
+        recordLifecycle("terminal-lab.exec.blocked", sessionReason);
+      }
     }
   } catch (error) {
     sessionError = sanitize(toErrorMessage(error));
@@ -1385,11 +1455,19 @@ async function runWithWallClock<T>(
 
 /** Build the in-sandbox `codex exec` command (non-interactive, JSON, stdin disabled by mechanism). */
 function buildCodexExecCommand(args: { workdir: string; prompt: string }): string {
-  // The prompt is passed via a heredoc on stdin of a wrapper? NO — stdin is DISABLED (item 7), so
+  // The prompt is passed via a heredoc on stdin of a wrapper? NO, stdin is DISABLED (item 7), so
   // the prompt rides as the final positional arg, shell-quoted. codex exec --json runs once and
   // exits (no interactive loop). --skip-git-repo-check: the workdir is a fresh scratch dir.
+  // Pinned via npx (never an ambient/preinstalled `codex` binary, which the stock @e2b/desktop
+  // image does not ship, per issue #159); npm_config_update_notifier=false silences npx's own
+  // update check so it cannot leak into the captured stdout the scorer/redactor parse.
   const quotedPrompt = `'${args.prompt.replace(/'/g, "'\\''")}'`;
-  return `cd ${args.workdir} && codex exec --skip-git-repo-check --json ${quotedPrompt}`;
+  // --dangerously-bypass-approvals-and-sandbox: codex's OWN inner sandbox is
+  // redundant here and blocks the network/file access the study mission needs.
+  // The E2B sandbox is the trust boundary (the disposable machine); the sibling
+  // oss-meta-lab lane carries the same flag at both live call sites for the
+  // same reason, and exec mode has no interactive approval channel at all.
+  return `cd ${args.workdir} && npm_config_update_notifier=false npx -y @openai/codex@latest exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check --json ${quotedPrompt}`;
 }
 
 /** Compose the live prompt: PUBLIC surfaces + author mission + the verdict-nonce marker contract. */
