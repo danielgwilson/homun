@@ -64,9 +64,12 @@ by key scoping and budgets, not by hoping.*
    `comparableToAutonomousBaseline: false`. Shipping an assisted path before the ledger + flag
    + verify check exist is forbidden (it would let an assisted run masquerade as autonomous
    green proof).
-8. **Cleanup is proven.** The sandbox is killed in a finally; a cleanup proof (kill +
-   re-list-remaining == 0) is persisted, and a live run that cannot prove teardown fails
-   closed.
+8. **Cleanup is proven BY EXACT CREATED ID, never by enumeration.** The sandbox is killed
+   (`Sandbox.kill(id)`) in a finally; the cleanup proof is BY ID: `kill(id)`'s own
+   found-and-killed boolean, confirmed further by `Sandbox.getInfo(id)` when the SDK exposes it
+   (a thrown `SandboxNotFoundError` means the exact sandbox is gone). homun NEVER calls
+   `Sandbox.list` to prove cleanup, so a shared operator key never reaches a sandbox it did not
+   create; a live run that cannot prove teardown fails closed.
 
 ## Tech-lead rulings on the recon's open questions
 
@@ -132,11 +135,13 @@ minimal fail-closed `maxUsd:0`/`maxMinutes` cap** so the live key is bounded by 
 Deterministic CI via a `terminalHooks` DI seam against a **mock CLI** at zero spend.
 *Proof:* (merge gate, $0) the `terminalHooks` test runs the full
 create→inject→run→capture→teardown path against a fake sandbox + mock CLI, asserting `verify`
-ok, the key never in metadata/global-env, cleanup remaining==0, interventions empty-present,
-and a blocked run still structurally verifiable. **(live rung — REQUIRED, kept receipt)** one
-key-gated E2B+Codex run: real sandbox created+killed, real Codex invoked, runtime auth
-command-scoped, no provider/payment/deploy/GitHub/db creds in artifacts, no spend, `verify`
-ok. Do NOT merge without BOTH the deterministic test AND the live receipt.
+ok, the key never in metadata/global-env, cleanup proven by exact id (remaining==0, never a
+`Sandbox.list` call), interventions empty-present, and a blocked run still structurally
+verifiable. **(live rung, REQUIRED, kept receipt)** one key-gated E2B+Codex run: real sandbox
+created+killed and reclaimed BY EXACT ID (no `Sandbox.list`, so the SAME shared operator key
+used elsewhere is safe), real Codex invoked, runtime auth command-scoped, no
+provider/payment/deploy/GitHub/db creds in artifacts, no spend, `verify` ok. Do NOT merge
+without BOTH the deterministic test AND the live receipt.
 
 **SLICE 3 — cost/spend ledger + no-spend proof + full caps enforcement.** A cost-ledger
 contract (product/media/payment/provider lines; unknowns as `null`, never undefined-omitted

@@ -71,10 +71,10 @@ describe.skipIf(!LIVE)("terminal-product lane (LIVE, key-gated, E2B + Codex)", (
   it("runs a real Codex agent in an E2B shell with a command-scoped key and a verified bundle", { timeout: 600_000 }, async () => {
     const result = await runTerminalProductLab({ cwd, config: liveConfig(), dryRun: false, open: false });
 
-    // Real sandbox created + reclaimed (cleanup proven). We do NOT assert task success.
+    // Real sandbox created + reclaimed BY EXACT ID (cleanup proven; never a Sandbox.list call).
     expect(result.sandbox?.sandboxId).toBeTruthy();
     expect(result.sandbox?.killed).toBe(true);
-    expect(result.sandbox?.remaining === 0 || result.sandbox?.remaining === -1).toBe(true);
+    expect(result.sandbox?.remaining).toBe(0);
     expect(["passed", "blocked", "failed", "timed_out"]).toContain(result.session?.status);
 
     // The bundle verifies independently, including the terminal-product evidence check.

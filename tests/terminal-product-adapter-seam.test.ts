@@ -127,14 +127,7 @@ function makeFakeModule(opts: { codexBehavior: (cmd: string) => { exitCode: numb
           stream: { getAuthKey: () => "fake-auth", getUrl: () => "https://fake-stream", async start() { return undefined; } }
         };
       },
-      async kill(sandboxId: string) { opts.killed.push(sandboxId); return undefined; },
-      list() {
-        const paginator = {
-          hasNext: true,
-          async nextItems() { paginator.hasNext = false; return [{ sandboxId: "unrelated-other-run", state: "running" as const }]; }
-        };
-        return paginator;
-      }
+      async kill(sandboxId: string) { opts.killed.push(sandboxId); return true; }
     }
   } as unknown as E2BDesktopModule;
 }

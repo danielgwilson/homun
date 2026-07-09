@@ -142,7 +142,7 @@ function makeFakeE2BModule(): {
       },
       kill: async (sandboxId: string) => {
         killed.push(sandboxId);
-        return undefined;
+        return true;
       }
     }
   };

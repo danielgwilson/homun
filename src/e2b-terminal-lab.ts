@@ -31,9 +31,11 @@
 //      set; it carries solely non-secret labels (mode/tool/labId/simId/provider/runId).
 //   7. STDIN DISABLED + INTERVENTIONS LEDGER. stdin is never wired to the codex command; the
 //      bundle ALWAYS carries an interventions ledger (empty array is valid + required-present).
-//   8. PROVEN CLEANUP. Sandbox.kill in a finally; a cleanup proof (killed + remaining==0 via
-//      Sandbox.list where supported, else killed + reason) is persisted. A live run that cannot
-//      prove teardown fails closed.
+//   8. PROVEN CLEANUP, BY ID, NEVER ACCOUNT-WIDE. Sandbox.kill(id) in a finally; the cleanup
+//      proof is BY EXACT ID: kill(id)'s own found-and-killed boolean, confirmed further by
+//      Sandbox.getInfo(id) when the SDK exposes it (a thrown SandboxNotFoundError means gone).
+//      homun NEVER calls Sandbox.list to prove cleanup, so a shared operator key never reaches a
+//      sandbox it did not create. A live run that cannot prove teardown fails closed.
 
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -45,6 +47,7 @@ import { actorRegistry, isTerminalActorDescriptor } from "./actor-registry.js";
 import { toErrorMessage } from "./command-failure.js";
 import type { LabConfig, LabScenarioCaps } from "./lab-config.js";
 import {
+  isSandboxNotFoundError,
   loadE2BDesktopModule,
   type E2BDesktopModule,
   type E2BDesktopSandbox
@@ -220,7 +223,8 @@ export interface TerminalProductLabResult {
   sandbox?: {
     sandboxId: string;
     killed: boolean;
-    /** Sandboxes still listed under this run's metadata after teardown (0 = proven reclaimed). */
+    /** BY-ID proof (never a re-list): 0 = confirmed reclaimed, 1 = still present (unconfirmed),
+     *  -1 = kill(id) itself failed or was unavailable. See TerminalLedgers["cleanup"]. */
     remaining: number;
   };
   /** Live-only: the spend ledger surfaced on the result (SLICE 3) — unknowns are null, never guessed.
@@ -522,11 +526,16 @@ export interface TerminalLedgers {
   /** ALWAYS present; ALWAYS empty this slice (no assisted-input path) — the safety contract. */
   interventions: InterventionRecord[];
   cleanup: {
-    /** True when Sandbox.kill resolved. */
+    /** True when Sandbox.kill(id) resolved without throwing (either found-and-killed, or a 404
+     *  meaning the exact id was already gone -- both prove absence; see `remaining`/`reason`). */
     killed: boolean;
-    /** Sandboxes still listed under this run's metadata after kill (0 = proven reclaimed). */
+    /** BY-ID proof, NEVER derived from Sandbox.list: 0 = confirmed reclaimed (kill(id) RESOLVED
+     *  -- returned true "found and killed" OR false "404, exact id already gone" -- and, when the
+     *  SDK exposes it, getInfo(id) did not report a live sandbox); 1 = getInfo(id) still reports
+     *  this exact sandbox running/paused (NOT reclaimed); -1 = kill(id) itself failed, threw, or
+     *  was unavailable (the server-side kill-on-timeout is the backstop). */
     remaining: number;
-    /** When list is unsupported by the SDK, remaining stays -1 and the reason is recorded honestly. */
+    /** Honest, human-readable statement of which by-id signal produced `remaining`. */
     reason: string;
   };
   /** The spend ledger (SLICE 3, additive). Unknowns are `null`, never guessed; the no-spend proof
@@ -1074,11 +1083,10 @@ async function runLiveTerminalSession(args: RunLiveTerminalSessionArgs): Promise
     sessionReason = `live terminal-product session failed: ${sessionError}`;
     recordLifecycle("terminal-lab.session.error", sessionReason);
   } finally {
-    // --- Safety contract item 8: PROVEN cleanup. Kill in finally; prove remaining==0. ---
+    // --- Safety contract item 8: PROVEN cleanup, BY EXACT ID, never Sandbox.list. ---
     cleanup = await teardownSandbox({
       sandboxModule,
       sandbox,
-      metadata,
       requestTimeoutMs,
       sanitize,
       recordLifecycle,
@@ -1211,7 +1219,9 @@ async function runLiveTerminalSession(args: RunLiveTerminalSessionArgs): Promise
   // The lab's exit code: verified evidence AND no harness error AND proven cleanup. A blocked/
   // timed-out agent run is STILL ok-as-evidence at the bundle level (the failure is the evidence),
   // but the LAB result surfaces ok:false on a harness error or unproven teardown (fail-closed).
-  const cleanupProven = cleanup.killed && (cleanup.remaining === 0 || cleanup.remaining === -1);
+  // remaining===0 is the by-id-confirmed-reclaimed state; remaining===1 (still present) and
+  // remaining===-1 (kill(id) itself failed) are both unproven by design.
+  const cleanupProven = cleanup.killed && cleanup.remaining === 0;
   const ok = observer.ok && completionReason !== "harness_error" && cleanupProven;
 
   return {
@@ -1365,63 +1375,72 @@ function isAdapterFeedbackCandidateShape(value: unknown): value is RunFeedbackCa
 }
 
 /**
- * Tear the sandbox down and PROVE it: kill via Sandbox.kill, then re-list under this run's metadata
- * (where the SDK supports list) and assert remaining==0. When list is unsupported, record killed +
- * an honest reason and remaining=-1 (the server-side kill-on-timeout is the backstop). Never
- * throws — teardown failure is recorded, the caller fails closed on an unproven teardown.
+ * Tear the sandbox down and PROVE it BY EXACT ID -- NEVER Sandbox.list (homun must never
+ * enumerate the operator's E2B account; see docs/principles/invariants-and-defaults.md). After
+ * Sandbox.kill(id) resolves, its own boolean return ("found and killed", per the SDK) is the
+ * PRIMARY proof. Where the SDK exposes Sandbox.getInfo(id), a thrown SandboxNotFoundError is a
+ * second by-id confirmation that the exact sandbox is gone; a returned SandboxInfo with a live
+ * state means teardown is NOT confirmed. Never throws -- teardown failure is recorded, the
+ * caller fails closed on an unproven teardown.
  */
 async function teardownSandbox(args: {
   sandboxModule: E2BDesktopModule | undefined;
   sandbox: E2BDesktopSandbox | undefined;
-  metadata: Record<string, string>;
   requestTimeoutMs: number;
   sanitize: (text: string) => string;
   recordLifecycle: (event: string, message: string) => void;
   warnings: string[];
 }): Promise<TerminalLedgers["cleanup"]> {
-  const { sandboxModule, sandbox, metadata, requestTimeoutMs, sanitize, recordLifecycle, warnings } = args;
+  const { sandboxModule, sandbox, requestTimeoutMs, sanitize, recordLifecycle, warnings } = args;
   if (!sandbox || !sandboxModule) {
     recordLifecycle("terminal-lab.cleanup.skipped", "No sandbox was created; nothing to reclaim.");
     return { killed: false, remaining: 0, reason: "no sandbox created" };
   }
-  let killed = false;
-  if (typeof sandboxModule.Sandbox.kill === "function") {
-    try {
-      await sandboxModule.Sandbox.kill(sandbox.sandboxId, { requestTimeoutMs });
-      killed = true;
-    } catch (error) {
-      warnings.push(`Sandbox teardown failed (server-side kill-on-timeout will reclaim it): ${sanitize(toErrorMessage(error))}`);
-    }
-  } else {
+  if (typeof sandboxModule.Sandbox.kill !== "function") {
     return { killed: false, remaining: -1, reason: "installed @e2b/desktop SDK does not expose Sandbox.kill; server-side kill-on-timeout will reclaim the sandbox" };
   }
 
-  // Re-list under THIS run's metadata to prove reclamation (remaining==0). Where list is
-  // unsupported, killed:true + reason is the proof (the goal packet permits this fallback).
-  if (typeof sandboxModule.Sandbox.list !== "function") {
-    recordLifecycle("terminal-lab.cleanup.killed", `Sandbox ${sandbox.sandboxId} killed; SDK has no list() to re-verify (killed:true is the proof).`);
-    return { killed, remaining: -1, reason: "killed; SDK does not expose Sandbox.list to re-verify (killed:true is the proof)" };
-  }
+  let killResult = false;
   try {
-    // Prove THIS run's reclamation: re-list and confirm OUR sandbox id is gone. We filter by our
-    // own sandboxId (not by counting every sandbox the metadata filter returns) — the E2B list
-    // metadata filter does not reliably isolate a single run, so counting all returned sandboxes
-    // would conflate unrelated concurrent sandboxes with this run's teardown. The kill API
-    // succeeding (killed) plus our sandbox being absent from the running list is the proof.
-    const paginator = sandboxModule.Sandbox.list({ metadata: { runId: metadata.runId ?? "" }, requestTimeoutMs });
-    let ours = 0;
-    let pages = 0;
-    // nextItems() advances the paginator's internal cursor; hasNext reflects it after each call.
-    while (paginator.hasNext && pages < 20) {
-      const items = await paginator.nextItems({ requestTimeoutMs });
-      ours += items.filter((info) => info.sandboxId === sandbox.sandboxId && (info.state ?? "running") !== "killed").length;
-      pages += 1;
-    }
-    recordLifecycle("terminal-lab.cleanup.verified", `Sandbox ${sandbox.sandboxId} killed; re-list confirms this run's sandbox is ${ours === 0 ? "no longer present" : "still present"}.`);
-    return { killed, remaining: ours, reason: ours === 0 ? "killed; re-list confirms this run's sandbox is reclaimed" : `killed; this run's sandbox still listed as running` };
+    killResult = (await sandboxModule.Sandbox.kill(sandbox.sandboxId, { requestTimeoutMs })) === true;
   } catch (error) {
-    recordLifecycle("terminal-lab.cleanup.list_error", `Sandbox ${sandbox.sandboxId} killed; re-list failed: ${sanitize(toErrorMessage(error))}`);
-    return { killed, remaining: -1, reason: `killed; re-list to verify reclamation failed: ${sanitize(toErrorMessage(error))}` };
+    const sanitizedError = sanitize(toErrorMessage(error));
+    warnings.push(`Sandbox teardown failed (server-side kill-on-timeout will reclaim it): ${sanitizedError}`);
+    recordLifecycle("terminal-lab.cleanup.kill_error", `Sandbox ${sandbox.sandboxId} kill(id) failed: ${sanitizedError}`);
+    return { killed: false, remaining: -1, reason: `kill(id) failed: ${sanitizedError} (server-side kill-on-timeout will reclaim it)` };
+  }
+
+  // BY-ID verification only, from here down: NEVER Sandbox.list. A kill(id) call that RESOLVES is
+  // itself proof the exact sandbox is gone: kill(id) returns true when it found and killed the
+  // sandbox, and false ONLY on a 404 (the exact id was already gone, e.g. the server-side
+  // kill-on-timeout raced ahead). Both mean "this id is no longer running." Sandbox.getInfo(id),
+  // when the SDK exposes it, adds a second by-id confirmation; the only thing that overturns the
+  // kill proof is getInfo returning a LIVE sandbox for this exact id.
+  const killNote = killResult
+    ? "kill(id) returned true (found and killed)"
+    : "kill(id) returned false (404: the exact sandbox was already gone)";
+
+  if (typeof sandboxModule.Sandbox.getInfo !== "function") {
+    recordLifecycle("terminal-lab.cleanup.killed", `Sandbox ${sandbox.sandboxId} reclaimed: ${killNote}; the installed SDK has no getInfo(id) to re-verify, so kill(id)'s own result is the proof.`);
+    return { killed: true, remaining: 0, reason: `reclaimed by id; ${killNote} and the installed SDK does not expose Sandbox.getInfo to re-verify` };
+  }
+
+  try {
+    const info = await sandboxModule.Sandbox.getInfo(sandbox.sandboxId, { requestTimeoutMs });
+    const state = info.state ?? "unknown";
+    recordLifecycle("terminal-lab.cleanup.unconfirmed", `Sandbox ${sandbox.sandboxId} ${killNote}, but getInfo(id) still reports state=${state} (not confirmed reclaimed by id).`);
+    return { killed: true, remaining: 1, reason: `${killNote} but getInfo(id) still reports state=${state}; this sandbox's teardown is not confirmed by id` };
+  } catch (error) {
+    if (isSandboxNotFoundError(error)) {
+      recordLifecycle("terminal-lab.cleanup.verified", `Sandbox ${sandbox.sandboxId} reclaimed; getInfo(id) confirms it no longer exists (SandboxNotFoundError) -- by exact id, never re-listed.`);
+      return { killed: true, remaining: 0, reason: `reclaimed by id; getInfo(id) confirms the exact sandbox no longer exists (SandboxNotFoundError)` };
+    }
+    // getInfo(id) failed for a reason OTHER than "not found" (e.g. a transient network error):
+    // no second by-id confirmation is available, so the RESOLVED kill(id) call stands as the proof
+    // of absence. Never fall back to Sandbox.list.
+    const sanitizedError = sanitize(toErrorMessage(error));
+    recordLifecycle("terminal-lab.cleanup.killed", `Sandbox ${sandbox.sandboxId} reclaimed: ${killNote}; getInfo(id) re-verification errored (${sanitizedError}), so kill(id)'s resolved result is the proof.`);
+    return { killed: true, remaining: 0, reason: `reclaimed by id; ${killNote} and getInfo(id) re-verification errored (${sanitizedError}), so kill(id)'s resolved result is the proof` };
   }
 }
 

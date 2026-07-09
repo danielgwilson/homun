@@ -133,8 +133,9 @@ adapter (roles/personas/rubric stay in the adopter's repo).
   injected overclaim — missing `no-concurrent-races`, a value-shaped checkpoint field, divergent
   plane provenance, a phantom/dropped role, a hollow (no-delta) passed run, a per-role hollow lane.
 
-Live rung: WRITTEN + gated, NOT run — a separately-authorized receipt (the dedicated team E2B key
-exists now; the live shared-world rung also needs a real stateful seeded app, so it is deferred).
+Live rung: WRITTEN + gated, NOT run (a separately-authorized receipt; a shared operator E2B key
+is safe here since teardown is by exact created id and never enumerates the account; the live
+shared-world rung also needs a real stateful seeded app, so it is deferred).
 
 ## Autonomy rails / spend / stop-and-ask
 

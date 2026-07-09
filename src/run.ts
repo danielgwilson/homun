@@ -4517,15 +4517,16 @@ async function validateTerminalProductEvidence(runRoot: string, bundle: RunBundl
     findings.push("interventions ledger is missing (an empty array is required-present, not optional)");
   }
 
-  // Cleanup proof: the sandbox must be killed and proven reclaimed (remaining 0, or -1 when the
-  // SDK cannot list — the kill + server-side kill-on-timeout backstop). A live run that cannot
-  // prove teardown fails closed.
+  // Cleanup proof: the sandbox must be killed and proven reclaimed BY EXACT ID (remaining===0).
+  // homun never calls Sandbox.list to derive this field; a live run that cannot prove teardown
+  // fails closed (remaining===1 still-present-unconfirmed, remaining===-1 kill(id) itself
+  // failed -- the server-side kill-on-timeout is the backstop for both).
   const cleanup = isRecord(ledgers.cleanup) ? ledgers.cleanup : undefined;
   if (!cleanup) {
     findings.push("cleanup proof is missing");
-  } else if (cleanup.killed !== true || !(cleanup.remaining === 0 || cleanup.remaining === -1)) {
+  } else if (cleanup.killed !== true || cleanup.remaining !== 0) {
     findings.push(
-      `cleanup not proven (killed=${String(cleanup.killed)}, remaining=${String(cleanup.remaining)}); a run that cannot prove sandbox teardown fails closed`
+      `cleanup not proven by id (killed=${String(cleanup.killed)}, remaining=${String(cleanup.remaining)}); a run that cannot prove sandbox teardown fails closed`
     );
   }
 

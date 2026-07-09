@@ -82,7 +82,7 @@ function makeFakeModule(sandbox: FakeSandbox): { module: E2BDesktopModule; creat
       },
       kill: async (sandboxId) => {
         killed.push(sandboxId);
-        return undefined;
+        return true;
       }
       // NOTE: NO `list` method — enumerate-and-kill is impossible here by construction.
     }

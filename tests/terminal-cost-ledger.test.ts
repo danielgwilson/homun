@@ -52,18 +52,12 @@ function makeFakeModule(opts: {
       },
       async kill(sandboxId: string) {
         opts.killed.push(sandboxId);
-        return undefined;
-      },
-      list() {
-        const paginator = {
-          hasNext: true,
-          async nextItems() {
-            paginator.hasNext = false;
-            return [{ sandboxId: "unrelated-other-run", state: "running" as const }];
-          }
-        };
-        return paginator;
+        return true; // real-SDK-accurate: kill(id) resolves true ("found and killed")
       }
+      // No Sandbox.getInfo/list on this fake: exercises the noGetInfo fallback in
+      // teardownSandbox, where kill(id)'s own boolean is the by-id proof. This lane's cleanup
+      // proof is not what these SLICE 3 cost-ledger tests are about; see
+      // tests/e2b-terminal-lab.test.ts for the by-id cleanup coverage.
     }
   } as unknown as E2BDesktopModule;
 }
