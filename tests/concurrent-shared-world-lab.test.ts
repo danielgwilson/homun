@@ -104,7 +104,7 @@ function makeFakeModule(commandHandler: (command: string) => { stdout?: string }
         sandboxes.push(sandbox);
         return sandbox;
       },
-      kill: async (sandboxId) => { killed.push(sandboxId); return undefined; }
+      kill: async (sandboxId) => { killed.push(sandboxId); return true; }
       // NOTE: NO `list` method.
     }
   };

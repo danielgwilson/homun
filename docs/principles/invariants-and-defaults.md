@@ -46,6 +46,16 @@ certify (see the conformance suite).
 6. **Claims match mechanism.** A config field that is parsed but not consumed warns; a
    document that overstates behavior is a defect; an evidence artifact never claims a
    stronger evidence class than its actor and scenario can support.
+7. **Reclamation is by exact created id, never account-wide enumeration.** A route that
+   creates a provider resource (an E2B sandbox, for example) tracks the exact id it created and
+   reclaims and PROVES cleanup against that id alone (a returned found-and-killed boolean, a
+   getInfo-by-id NotFound check). No route ever calls a provider's list-everything endpoint to
+   discover or verify its own cleanup, because that endpoint enumerates the whole account/team,
+   not just what homun created. This is what makes a single shared operator key safe: homun
+   only ever reaches a resource it created, never anything else the key's owner is running.
+   The one narrow exception is an explicit, maintainer-run orphan sweep (never a default, never
+   reachable by a normal lab run) that is itself opt-in gated (an explicit flag or env var) and
+   documented as such at its call site.
 
 ## Defaults
 

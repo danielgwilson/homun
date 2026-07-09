@@ -180,7 +180,7 @@ function makeFakeModule(sandbox: FakeSandbox): {
       },
       kill: async (sandboxId) => {
         killed.push(sandboxId);
-        return undefined;
+        return true;
       }
     }
   };

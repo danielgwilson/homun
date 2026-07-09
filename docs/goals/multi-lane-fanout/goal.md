@@ -117,10 +117,11 @@ shared-state depth work.
   (E2B desktop + OpenAI computer-use); a dollar cap; a wall-clock cap; **max concurrent
   paid desktops = the `execution.concurrency` bound** (the spend control, not a total
   run-count cap); cleanup/readback = each lane's sandbox killed by id in a finally + a
-  post-run list-by-id confirmation that THIS run's sandboxes are gone (never a bulk kill);
+  post-run by-id confirmation that THIS run's sandboxes are gone (never a list, never a bulk kill);
   a usage receipt path under `receipts/`.
-- Use the dedicated test E2B key (not any production key). If the dollar or wall-clock cap
-  is hit, stop and report.
+- A shared operator E2B key is safe: homun reclaims and verifies only the exact sandbox ids
+  it created, by id, and never enumerates the account (see the invariants doc). If the dollar
+  or wall-clock cap is hit, stop and report.
 
 ## Stop And Ask
 

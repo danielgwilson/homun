@@ -23,7 +23,25 @@ export interface E2BDesktopModule {
      * wrapper just exposes it. Threaded from `execution.desktop.template`.
      */
     create(template: string, options: E2BDesktopCreateOptions): Promise<E2BDesktopSandbox>;
-    kill?(sandboxId: string, options?: { requestTimeoutMs?: number }): Promise<unknown>;
+    /**
+     * Kill the sandbox specified by exact id. Returns true iff THAT sandbox was found and
+     * killed, false otherwise (the SDK's own doc comment). This boolean is the PRIMARY by-id
+     * cleanup proof: a caller never needs to re-list to confirm reclamation.
+     */
+    kill?(sandboxId: string, options?: { requestTimeoutMs?: number }): Promise<boolean>;
+    /**
+     * Fetch ONE sandbox by its exact id (never account-wide). Throws a SandboxNotFoundError-
+     * shaped error (see isSandboxNotFoundError below) when the id no longer exists; that thrown
+     * error IS the by-id confirmation that a killed sandbox is gone. Optional: older SDKs may
+     * lack it, so callers fall back to kill()'s own boolean rather than ever calling Sandbox.list.
+     */
+    getInfo?(sandboxId: string, options?: { requestTimeoutMs?: number }): Promise<E2BSandboxInfo>;
+    /**
+     * ACCOUNT-WIDE enumeration. Kept only for the routes that already avoid it for cleanup
+     * (shared-world/scripted/cua/preflight kill by exact id and never call this); no cleanup
+     * proof in this codebase should call it (see e2b-terminal-lab.ts teardownSandbox and
+     * oss-meta-lab.ts, both of which reclaim and verify by id, never by listing).
+     */
     list?(options: E2BSandboxListOptions): E2BSandboxPaginator;
   };
 }
@@ -132,6 +150,21 @@ export async function loadE2BDesktopModule(): Promise<E2BDesktopModule> {
 export function isMissingE2BDesktopDependency(error: unknown): boolean {
   const value = error as { code?: string; message?: string };
   return value.code === "ERR_MODULE_NOT_FOUND" && value.message?.includes("@e2b/desktop") === true;
+}
+
+/**
+ * Detect a SandboxNotFoundError-shaped error from the real @e2b/desktop SDK, WITHOUT importing
+ * its class (this module stays optional-peer / lazily-loaded, same as everything else here).
+ * The real SDK sets `this.name = "SandboxNotFoundError"` on the class (it extends the
+ * deprecated NotFoundError), so checking `.name` is the stable, import-free detection contract.
+ * The constructor-name fallback covers a bundler/transpile shape where `.name` was not copied
+ * onto the instance. A thrown SandboxNotFoundError from Sandbox.getInfo(id) is the by-id proof
+ * that the exact sandbox homun created is gone (confirmed reclaimed), never a re-list.
+ */
+export function isSandboxNotFoundError(error: unknown): boolean {
+  if (error === null || typeof error !== "object") return false;
+  const value = error as { name?: unknown; constructor?: { name?: unknown } };
+  return value.name === "SandboxNotFoundError" || value.constructor?.name === "SandboxNotFoundError";
 }
 
 /**

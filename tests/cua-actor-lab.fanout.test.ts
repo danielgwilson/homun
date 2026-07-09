@@ -174,7 +174,7 @@ function makeFanoutModule(options: FanoutModuleOptions = {}): FanoutModuleHandle
       kill: async (sandboxId) => {
         killed.push(sandboxId);
         live -= 1;
-        return undefined;
+        return true;
       }
       // NO `list` — the lab can only kill the exact ids it created, never enumerate.
     }

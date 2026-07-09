@@ -256,7 +256,7 @@ function fakeDesktopModule(args: {
       },
       kill: async () => {
         args.onKill?.();
-        return undefined;
+        return true;
       }
     }
   };

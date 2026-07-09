@@ -164,9 +164,14 @@ bespoke real-agent sim for homun + a thin adapter — see
 - Product-adapter extension seam: exported contract types + a scorer/feedback DI hook +
   adapter-namespaced product nouns, so an adopter attaches scoring/feedback as a thin
   in-repo extension without forking core. `done`
-- Honest gap: the lane's mechanics + credential boundary are proven DETERMINISTICALLY; a live
-  "real Codex agent completed a task" receipt is pending a dedicated test E2B key (isolated
-  from prod) and a sandbox image with the agent runtime installed
+- Cleanup is proven BY EXACT CREATED ID: `Sandbox.kill(id)`, confirmed further by
+  `Sandbox.getInfo(id)` where the SDK exposes it, and homun never calls `Sandbox.list`. A live
+  rung never needs a dedicated or isolated E2B key; the SAME shared operator key used everywhere
+  else in this repo is safe, because homun only ever reaches a sandbox it created (see
+  "The placement rule" corollary in `docs/principles/invariants-and-defaults.md`).
+- Honest gap: the lane's mechanics + credential boundary + by-id cleanup are proven
+  DETERMINISTICALLY; a live "real Codex agent completed a task" receipt is pending a sandbox
+  image with the agent runtime installed
   ([#159](https://github.com/danielgwilson/homun/issues/159)). Duplex-PTY/xterm replay
   is a deferred SLICE 5.
 

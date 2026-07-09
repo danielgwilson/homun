@@ -38,7 +38,25 @@ function makeFakeModule(opts: {
   creates: RecordedCreate[];
   runs: RecordedRun[];
   killed: string[];
-  listRemaining?: () => number; // sandboxes still listed after kill (default 0 = proven reclaimed)
+  /** Records every Sandbox.list(id) call. Teardown must NEVER call it (by-id proof only, never
+   *  a re-list); tests assert this array stays empty after a run. */
+  listCalls?: string[];
+  /** When set, Sandbox.kill(id) THROWS instead of resolving (the "kill itself failed" case ->
+   *  fail-closed remaining=-1). */
+  killThrows?: (sandboxId: string) => { message?: string } | undefined;
+  /** Sandbox.kill(id)'s own resolved boolean ("found and killed", per the real SDK) when it does
+   *  not throw. Defaults to true. */
+  killResult?: boolean;
+  /**
+   * Controls Sandbox.getInfo(id): "not-found" throws a SandboxNotFoundError-shaped error (the
+   * by-id CONFIRMED-reclaimed case, remaining=0 -- this is the default, matching a genuinely
+   * reclaimed sandbox); "running"/"paused" returns a live SandboxInfo (NOT confirmed reclaimed,
+   * remaining=1).
+   */
+  getInfoState?: "not-found" | "running" | "paused";
+  /** Omit Sandbox.getInfo entirely, simulating an older SDK (kill(id)'s own boolean becomes the
+   *  sole by-id proof). */
+  noGetInfo?: boolean;
   /**
    * Throws a CommandExitError-shaped error (real-SDK-accurate: the real @e2b/desktop Sandbox
    * throws on any non-zero exit rather than returning one) for the runtime-bootstrap command.
@@ -109,21 +127,32 @@ function makeFakeModule(opts: {
       },
       async kill(sandboxId: string) {
         opts.killed.push(sandboxId);
-        return undefined;
+        const thrown = opts.killThrows?.(sandboxId);
+        if (thrown) {
+          throw Object.assign(new Error(thrown.message ?? "kill failed"), { name: "Error" });
+        }
+        return opts.killResult ?? true;
       },
+      ...(opts.noGetInfo
+        ? {}
+        : {
+            async getInfo(sandboxId: string) {
+              const state = opts.getInfoState ?? "not-found";
+              if (state === "not-found") {
+                // A real reclaimed sandbox: the SDK throws SandboxNotFoundError, detected by
+                // `.name` (see isSandboxNotFoundError in src/e2b-desktop-launch.ts).
+                throw Object.assign(new Error(`Sandbox ${sandboxId} not found`), { name: "SandboxNotFoundError" });
+              }
+              return { sandboxId, state };
+            }
+          }),
+      // Kept only for structural parity with the real SDK (older callers, e.g. lab-preflight.ts,
+      // still use it for their own purposes). Teardown must NEVER call this -- see listCalls.
       list(_options: unknown) {
-        const remaining = opts.listRemaining ? opts.listRemaining() : 0;
+        opts.listCalls?.push("called");
         const paginator = {
-          // When the test simulates an unproven teardown, OUR sandbox is still listed as running
-          // (plus an unrelated one, to prove the filter ignores other sandboxes). When 0, the list
-          // returns only an unrelated sandbox — which must NOT count as this run's teardown failing.
-          hasNext: true,
-          async nextItems() {
-            paginator.hasNext = false; // single page, then exhausted (mirrors a real cursor advancing)
-            const unrelated = { sandboxId: "unrelated-other-run", state: "running" as const };
-            if (remaining > 0) return [{ sandboxId: `fake-sandbox-${counter}`, state: "running" as const }, unrelated];
-            return [unrelated];
-          }
+          hasNext: false,
+          async nextItems() { return []; }
         };
         return paginator;
       }
@@ -177,11 +206,12 @@ describe("runTerminalProductLab (live path, deterministic, no spend)", () => {
     const creates: RecordedCreate[] = [];
     const runs: RecordedRun[] = [];
     const killed: string[] = [];
+    const listCalls: string[] = [];
     const hooks: TerminalProductLabHooks = {
       env: baseEnv(),
       now: () => 1_000,
       loadModule: async () => makeFakeModule({
-        creates, runs, killed,
+        creates, runs, killed, listCalls,
         codexBehavior: (cmd) => ({
           exitCode: 0,
           // A real agent echoes the nonce-verified verdict AND some output — INCLUDING the key value
@@ -193,11 +223,13 @@ describe("runTerminalProductLab (live path, deterministic, no spend)", () => {
 
     const result = await runTerminalProductLab({ cwd, config: liveConfig(), dryRun: false, open: false, hooks });
 
-    // Sandbox created + killed; cleanup proven.
+    // Sandbox created + killed; cleanup proven BY EXACT ID (getInfo(id) confirms
+    // SandboxNotFoundError). Sandbox.list is NEVER called on the teardown path.
     expect(creates.length).toBe(1);
     expect(killed.length).toBe(1);
     expect(result.sandbox?.killed).toBe(true);
     expect(result.sandbox?.remaining).toBe(0);
+    expect(listCalls.length).toBe(0);
 
     // CREDENTIAL BOUNDARY: Sandbox.create carried NO envs (key never sandbox-global) and no key in metadata.
     expect(creates[0]?.envs).toBeUndefined();
@@ -356,22 +388,139 @@ describe("runTerminalProductLab (live path, deterministic, no spend)", () => {
     expect(verified.checks.find((c) => c.name === "terminal-product evidence")?.ok).toBe(true);
   });
 
-  it("fails closed when teardown cannot be proven (sandbox still listed after kill)", async () => {
+  it("fails closed when teardown cannot be proven by id (Sandbox.getInfo(id) still reports the sandbox running)", async () => {
     const creates: RecordedCreate[] = [];
     const runs: RecordedRun[] = [];
     const killed: string[] = [];
+    const listCalls: string[] = [];
     const hooks: TerminalProductLabHooks = {
       env: baseEnv(),
       now: () => 3_000,
       loadModule: async () => makeFakeModule({
-        creates, runs, killed,
-        listRemaining: () => 1, // a sandbox is STILL listed after kill -> teardown not proven
+        creates, runs, killed, listCalls,
+        // kill(id) resolves, but getInfo(id) STILL reports the sandbox running -> not confirmed
+        // reclaimed by id. Never a re-list.
+        getInfoState: "running",
         codexBehavior: (cmd) => ({ exitCode: 0, stdout: `HOMUN_ACTOR_VERDICT=passed HOMUN_ACTOR_NONCE=${nonceFrom(cmd)}\n` })
       })
     };
     const result = await runTerminalProductLab({ cwd, config: liveConfig(), dryRun: false, open: false, hooks });
     expect(result.ok).toBe(false);
     expect(result.error?.code).toBe("HOMUN_TERMINAL_LAB_CLEANUP_UNPROVEN");
+    expect(result.sandbox?.killed).toBe(true);
+    expect(result.sandbox?.remaining).toBe(1);
+    expect(killed.length).toBe(1);
+    expect(listCalls.length).toBe(0);
+  });
+
+  it("fails closed when Sandbox.kill(id) itself throws (remaining=-1, never a re-list)", async () => {
+    const creates: RecordedCreate[] = [];
+    const runs: RecordedRun[] = [];
+    const killed: string[] = [];
+    const listCalls: string[] = [];
+    const hooks: TerminalProductLabHooks = {
+      env: baseEnv(),
+      now: () => 3_500,
+      loadModule: async () => makeFakeModule({
+        creates, runs, killed, listCalls,
+        killThrows: () => ({ message: "provider timeout killing sandbox" }),
+        codexBehavior: (cmd) => ({ exitCode: 0, stdout: `HOMUN_ACTOR_VERDICT=passed HOMUN_ACTOR_NONCE=${nonceFrom(cmd)}\n` })
+      })
+    };
+    const result = await runTerminalProductLab({ cwd, config: liveConfig(), dryRun: false, open: false, hooks });
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe("HOMUN_TERMINAL_LAB_CLEANUP_UNPROVEN");
+    expect(result.sandbox?.killed).toBe(false);
+    expect(result.sandbox?.remaining).toBe(-1);
+    expect(listCalls.length).toBe(0);
+  });
+
+  it("confirms reclamation by id when Sandbox.getInfo(id) throws SandboxNotFoundError (remaining=0, never a re-list)", async () => {
+    const creates: RecordedCreate[] = [];
+    const runs: RecordedRun[] = [];
+    const killed: string[] = [];
+    const listCalls: string[] = [];
+    const hooks: TerminalProductLabHooks = {
+      env: baseEnv(),
+      now: () => 3_700,
+      loadModule: async () => makeFakeModule({
+        creates, runs, killed, listCalls,
+        getInfoState: "not-found", // the exact sandbox no longer exists -> confirmed reclaimed
+        codexBehavior: (cmd) => ({ exitCode: 0, stdout: `HOMUN_ACTOR_VERDICT=passed HOMUN_ACTOR_NONCE=${nonceFrom(cmd)}\n` })
+      })
+    };
+    const result = await runTerminalProductLab({ cwd, config: liveConfig(), dryRun: false, open: false, hooks });
+    expect(result.ok).toBe(true);
+    expect(result.sandbox?.killed).toBe(true);
+    expect(result.sandbox?.remaining).toBe(0);
+    expect(listCalls.length).toBe(0);
+    const ledgers = JSON.parse(await readFile(path.join(cwd, ".homun", "runs", result.runId, "terminal-ledgers.json"), "utf8"));
+    expect(ledgers.cleanup.reason).toMatch(/SandboxNotFoundError/);
+  });
+
+  it("falls back to kill(id)'s own boolean as proof when the installed SDK has no Sandbox.getInfo (never a re-list)", async () => {
+    const creates: RecordedCreate[] = [];
+    const runs: RecordedRun[] = [];
+    const killed: string[] = [];
+    const listCalls: string[] = [];
+    const hooks: TerminalProductLabHooks = {
+      env: baseEnv(),
+      now: () => 3_900,
+      loadModule: async () => makeFakeModule({
+        creates, runs, killed, listCalls,
+        noGetInfo: true, // an older SDK: kill(id) returning true is the sole by-id proof
+        codexBehavior: (cmd) => ({ exitCode: 0, stdout: `HOMUN_ACTOR_VERDICT=passed HOMUN_ACTOR_NONCE=${nonceFrom(cmd)}\n` })
+      })
+    };
+    const result = await runTerminalProductLab({ cwd, config: liveConfig(), dryRun: false, open: false, hooks });
+    expect(result.ok).toBe(true);
+    expect(result.sandbox?.killed).toBe(true);
+    expect(result.sandbox?.remaining).toBe(0);
+    expect(listCalls.length).toBe(0);
+  });
+
+  it("treats kill(id) returning false (404: exact id already gone) as confirmed reclaimed, no getInfo (never a re-list)", async () => {
+    const creates: RecordedCreate[] = [];
+    const runs: RecordedRun[] = [];
+    const killed: string[] = [];
+    const listCalls: string[] = [];
+    const hooks: TerminalProductLabHooks = {
+      env: baseEnv(),
+      now: () => 3_950,
+      loadModule: async () => makeFakeModule({
+        creates, runs, killed, listCalls,
+        noGetInfo: true,
+        // The server-side kill-on-timeout raced ahead: the exact sandbox is already gone, so
+        // kill(id) returns false (404). That is proof of absence, not an unproven teardown.
+        killResult: false,
+        codexBehavior: (cmd) => ({ exitCode: 0, stdout: `HOMUN_ACTOR_VERDICT=passed HOMUN_ACTOR_NONCE=${nonceFrom(cmd)}\n` })
+      })
+    };
+    const result = await runTerminalProductLab({ cwd, config: liveConfig(), dryRun: false, open: false, hooks });
+    expect(result.ok).toBe(true);
+    expect(result.sandbox?.remaining).toBe(0);
+    expect(listCalls.length).toBe(0);
+  });
+
+  it("treats kill(id)=false confirmed by getInfo SandboxNotFoundError as reclaimed (remaining=0)", async () => {
+    const creates: RecordedCreate[] = [];
+    const runs: RecordedRun[] = [];
+    const killed: string[] = [];
+    const listCalls: string[] = [];
+    const hooks: TerminalProductLabHooks = {
+      env: baseEnv(),
+      now: () => 3_960,
+      loadModule: async () => makeFakeModule({
+        creates, runs, killed, listCalls,
+        killResult: false,
+        getInfoState: "not-found",
+        codexBehavior: (cmd) => ({ exitCode: 0, stdout: `HOMUN_ACTOR_VERDICT=passed HOMUN_ACTOR_NONCE=${nonceFrom(cmd)}\n` })
+      })
+    };
+    const result = await runTerminalProductLab({ cwd, config: liveConfig(), dryRun: false, open: false, hooks });
+    expect(result.ok).toBe(true);
+    expect(result.sandbox?.remaining).toBe(0);
+    expect(listCalls.length).toBe(0);
   });
 });
 

@@ -501,7 +501,7 @@ describe("OSS lab command", () => {
     expect(killed).toEqual(["sandbox-a", "sandbox-b"]);
   });
 
-  it("cleans up stale OSS meta-lab sandboxes by provider metadata without exposing ids", async () => {
+  it("cleans up stale OSS meta-lab sandboxes by provider metadata without exposing ids (explicit listSandboxes DI = opted in)", async () => {
     const killed = new Set<string>();
     const listSandboxes = async () => [
       { sandboxId: "sandbox-a", metadata: { mode: "oss-meta-lab", tool: "homun" } },
@@ -515,6 +515,8 @@ describe("OSS lab command", () => {
       return !id || !killed.has(id);
     });
 
+    // Passing an explicit listSandboxes callback IS the opt-in for this test (it bypasses the
+    // HOMUN_OSS_META_ALLOW_PROVIDER_LIST gate, which only guards the REAL @e2b/desktop path).
     await expect(cleanupStaleOssMetaLabSandboxes({
       killSandbox: async (sandboxId) => {
         killed.add(sandboxId);
@@ -529,6 +531,41 @@ describe("OSS lab command", () => {
       errors: []
     });
     expect([...killed]).toEqual(["sandbox-a", "sandbox-b", "sandbox-c"]);
+  });
+
+  it("never enumerates the E2B account by default: cleanupStaleOssMetaLabSandboxes without listSandboxes DI and without the opt-in env skips Sandbox.list", async () => {
+    const previous = process.env.HOMUN_OSS_META_ALLOW_PROVIDER_LIST;
+    delete process.env.HOMUN_OSS_META_ALLOW_PROVIDER_LIST;
+    try {
+      const cleanup = await cleanupStaleOssMetaLabSandboxes({ requestTimeoutMs: 123 });
+      // No account-wide discovery happened: nothing was found to kill, and the honest reason is
+      // recorded, never a silent no-op pretending success.
+      expect(cleanup.killed).toBe(0);
+      expect(cleanup.errors.join("\n")).toContain("disabled by default");
+      expect(cleanup.errors.join("\n")).toContain("HOMUN_OSS_META_ALLOW_PROVIDER_LIST");
+    } finally {
+      if (previous === undefined) delete process.env.HOMUN_OSS_META_ALLOW_PROVIDER_LIST;
+      else process.env.HOMUN_OSS_META_ALLOW_PROVIDER_LIST = previous;
+    }
+  });
+
+  it("HOMUN_OSS_META_ALLOW_PROVIDER_LIST=1 opts back into the real-SDK discovery path (advances past the default-disabled gate)", async () => {
+    const previousEnvFlag = process.env.HOMUN_OSS_META_ALLOW_PROVIDER_LIST;
+    const previousE2b = process.env.E2B_API_KEY;
+    process.env.HOMUN_OSS_META_ALLOW_PROVIDER_LIST = "1";
+    delete process.env.E2B_API_KEY;
+    try {
+      const cleanup = await cleanupStaleOssMetaLabSandboxes({ requestTimeoutMs: 123 });
+      // The gate no longer blocks: execution advanced to the NEXT honest check (no E2B_API_KEY),
+      // proving the opt-in was read, without needing a live E2B account for this test.
+      expect(cleanup.errors.join("\n")).toContain("E2B_API_KEY is not present");
+      expect(cleanup.errors.join("\n")).not.toContain("disabled by default");
+    } finally {
+      if (previousEnvFlag === undefined) delete process.env.HOMUN_OSS_META_ALLOW_PROVIDER_LIST;
+      else process.env.HOMUN_OSS_META_ALLOW_PROVIDER_LIST = previousEnvFlag;
+      if (previousE2b === undefined) delete process.env.E2B_API_KEY;
+      else process.env.E2B_API_KEY = previousE2b;
+    }
   });
 
   it("redacts provider ids from cleanup errors when requested", async () => {

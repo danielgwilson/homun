@@ -1178,7 +1178,7 @@ function registerLabCommands(parent: Command, io: CliIo): void {
   lab
     .command("cleanup")
     .argument("[lab]", "Provider-backed lab to clean up.", "oss")
-    .description("Clean up stale provider resources for a lab without printing provider ids.")
+    .description("Sweep stale provider resources from a crashed prior process, by provider metadata, without printing provider ids. homun never enumerates an account by default: set HOMUN_OSS_META_ALLOW_PROVIDER_LIST=1 to opt in for this maintainer-only sweep.")
     .option("--json", JSON_OPTION_DESCRIPTION)
     .action(async (labName: string, _options: { json?: boolean }, command) => {
       if (labName !== "oss") {

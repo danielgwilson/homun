@@ -1602,9 +1602,16 @@ function cleanupOssMetaLabLiveDesktops(
     }))
   };
 
-  return options.includeProviderReadback === false
-    ? cleanupOssMetaLabSandboxes(result, options)
-    : cleanupOssMetaLabSandboxesAndProviderMatches(result, options);
+  // BY-ID ONLY by default -- never Sandbox.list. This run's own sandboxIds (including ones whose
+  // bootstrap failed after Sandbox.create succeeded; see launchLiveDesktops above) are already
+  // tracked in `liveDesktops`, so no account-wide discovery is needed to reclaim what THIS run
+  // created. Explicit `includeProviderReadback: true` additionally sweeps stale provider-tagged
+  // sandboxes left by a crashed prior process; only the maintainer-only `homun lab cleanup oss`
+  // command (cleanupStaleOssMetaLabSandboxes) needs that, and its own Sandbox.list call is
+  // further gated behind HOMUN_OSS_META_ALLOW_PROVIDER_LIST (see listOssMetaLabProviderSandboxIds).
+  return options.includeProviderReadback === true
+    ? cleanupOssMetaLabSandboxesAndProviderMatches(result, options)
+    : cleanupOssMetaLabSandboxes(result, options);
 }
 
 export function sandboxIdsForOssMetaLabCleanup(result: Pick<OssMetaLabResult, "sandboxes">): string[] {
@@ -1672,6 +1679,20 @@ async function listOssMetaLabProviderSandboxIds(options: {
 }): Promise<{ ids: string[]; skipped: number; errors: string[] }> {
   let listSandboxes = options.listSandboxes;
   if (!listSandboxes) {
+    // homun never enumerates an operator's E2B account by default (see
+    // docs/principles/invariants-and-defaults.md): reclaiming THIS run's own sandboxes stays
+    // by-id-only (sandboxIdsForOssMetaLabCleanup / cleanupOssMetaLabSandboxes). Real, account-wide
+    // Sandbox.list discovery exists ONLY for a maintainer's explicit orphan sweep of a crashed
+    // prior process (`homun lab cleanup oss`) and requires this opt-in, set deliberately by the
+    // maintainer running it against their own account -- never a default, never for a shared key.
+    if (process.env.HOMUN_OSS_META_ALLOW_PROVIDER_LIST !== "1") {
+      return {
+        ids: [],
+        skipped: 0,
+        errors: ["Provider-wide Sandbox.list discovery is disabled by default (homun never enumerates an E2B account); set HOMUN_OSS_META_ALLOW_PROVIDER_LIST=1 to opt in for a maintainer-run orphan sweep."]
+      };
+    }
+
     const e2bApiKey = process.env.E2B_API_KEY;
     if (!e2bApiKey) {
       return {
@@ -2841,8 +2862,14 @@ async function launchLiveDesktops(
   return Promise.all(assignments.map(async (assignment) => {
     const repoLabel = options.redactRepoNames ? repoArtifactLabel(assignment) : assignment.repo;
     const hostActorPlanResult = options.hostActorPlansByStream?.get(assignment.streamId);
+    // Hoisted OUTSIDE the try so a failure after Sandbox.create succeeds (bootstrap/stream) still
+    // lets the catch branch report the sandboxId it already created. Without this, a live sandbox
+    // that failed to bootstrap had no id anywhere in this run's own result, and the ONLY way to
+    // reclaim it was Sandbox.list account-wide discovery. Capturing it here is what lets cleanup
+    // stay by-id-only for this run (see cleanupOssMetaLabLiveDesktops below).
+    let desktop: E2BDesktopSandbox | undefined;
     try {
-      const desktop = await desktopModule.Sandbox.create({
+      desktop = await desktopModule.Sandbox.create({
         apiKey: e2bApiKey,
         requestTimeoutMs,
         timeoutMs,
@@ -2895,6 +2922,10 @@ async function launchLiveDesktops(
         ...(hostActorPlanResult?.plan ? { hostActorPlan: hostActorPlanResult.plan } : {}),
         ...(hostActorPlanResult?.artifactPath ? { hostActorPlanPath: hostActorPlanResult.artifactPath } : {}),
         repo: repoLabel,
+        // The sandbox may have been created before the failure (e.g. bootstrap threw): if so,
+        // its id rides the result too, so THIS run's own cleanup can reclaim it by id without
+        // ever listing the account.
+        ...(desktop?.sandboxId ? { sandboxId: desktop.sandboxId } : {}),
         simId: assignment.simId,
         streamId: assignment.streamId
       };
