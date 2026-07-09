@@ -169,11 +169,14 @@ bespoke real-agent sim for homun + a thin adapter — see
   rung never needs a dedicated or isolated E2B key; the SAME shared operator key used everywhere
   else in this repo is safe, because homun only ever reaches a sandbox it created (see
   "The placement rule" corollary in `docs/principles/invariants-and-defaults.md`).
-- Honest gap: the lane's mechanics + credential boundary + by-id cleanup are proven
-  DETERMINISTICALLY; a live "real Codex agent completed a task" receipt is pending a sandbox
-  image with the agent runtime installed
-  ([#159](https://github.com/danielgwilson/homun/issues/159)). Duplex-PTY/xterm replay
-  is a deferred SLICE 5.
+- LIVE-PROVEN (2026-07-09): a real Codex agent, bootstrapped in a stock E2B shell (Node
+  installed in-sandbox, run via `npx -y @openai/codex@latest exec`), studied a public
+  agent-CLI product from its declared public surfaces and ran the product's free zero-spend
+  guide within `$0` no-spend caps; verdict nonce-verified, cleanup proven BY EXACT ID
+  (`getInfo(id)` SandboxNotFoundError, never `Sandbox.list`), verify 15/15, share_ready
+  (`docs/goals/terminal-product-lane/receipts/terminal-live-rung-2026-07-09.md`). This closes
+  the #159 live-receipt gap. Optional follow-up: a custom image with the agent runtime baked in
+  to drop the per-run npx bootstrap. Duplex-PTY/xterm replay is a deferred SLICE 5.
 
 Multi-lane fan-out for the computer-use lab (0.9.0; proof-roadmap layer 2, the prerequisite
 for multi-actor shared-state work — #163, see `docs/goals/multi-lane-fanout/goal.md`):
