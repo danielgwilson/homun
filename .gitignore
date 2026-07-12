@@ -13,7 +13,7 @@ coverage/
 *.tsbuildinfo
 
 # proof/runtime artifacts
-.homun/
+.humanish/
 artifacts/proof/
 proof/
 .e2b/
