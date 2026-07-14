@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("release readiness", () => {
@@ -19,7 +19,7 @@ describe("release readiness", () => {
     };
 
     expect(packageJson.private).toBeUndefined();
-    expect(packageJson.version).toBe("0.15.1");
+    expect(packageJson.version).toBe("0.15.2");
     expect(packageJson.license).toBe("MIT");
     expect(packageJson.publishConfig?.access).toBe("public");
     expect(packageJson.dependencies).not.toHaveProperty("@e2b/desktop");
@@ -111,6 +111,12 @@ describe("release readiness", () => {
     for (const term of forbidden) {
       expect(`${ramp}\n${goals}`).not.toContain(term);
     }
+  });
+
+  it("ships the Observer hero asset in the npm payload", async () => {
+    const screenshot = await stat("docs/assets/humanish-observer-hero.png");
+
+    expect(screenshot.size).toBeGreaterThan(50_000);
   });
 
   it("defines tag-gated npm trusted publishing", async () => {
