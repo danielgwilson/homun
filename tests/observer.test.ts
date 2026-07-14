@@ -583,7 +583,8 @@ describe("observer rendering", () => {
 
       const html = await readFile(path.join(cwd, observerPath), "utf8");
       // Title + brand of the redesigned mission-control shell.
-      expect(html).toContain("Humanish Observer");
+      expect(html).toContain("<title>Humanish Observer - observer-proof</title>");
+      expect(html).toContain('aria-label="Humanish Observer mission control"');
       // Embedded observer-data carries the lane status verbatim.
       expect(html).toContain("contract_proof_only");
       expect(html).toContain('id="observer-data"');
@@ -608,6 +609,8 @@ describe("observer rendering", () => {
   it("renders multi-surface browser lab metadata without hiding live and screenshot modes", () => {
     const client = renderObserverClientForTest(browserLabObserverData());
 
+    expect(client.html()).toContain('<span class="brand-word">Humanish</span>');
+    expect(client.html()).not.toContain('<span class="brand-word">Humanish <b>Observer</b></span>');
     expect(client.html()).toContain('data-live-stream-id="lane-01"');
     expect(client.html()).toContain('data-live-stream-url="https://stream.example/it-tools"');
     expect(client.html()).toContain("connecting live stream");

@@ -1784,7 +1784,7 @@ export function observerClientJs(): string {
     var title = (run.scenario && run.scenario.title) || "Humanish run";
     var persona = (run.persona && run.persona.name) || "";
     return '<header class="hdr">'
-      + '<div class="hdr-brand"><span class="brand-mark">' + icon("live", 15) + '</span><span class="brand-word">Humanish <b>Observer</b></span></div>'
+      + '<div class="hdr-brand"><span class="brand-mark">' + icon("live", 15) + '</span><span class="brand-word">Humanish</span></div>'
       + '<div class="hdr-run">'
       + '<div class="hdr-run-title" title="' + esc(title) + '">' + esc(title) + '</div>'
       + '<div class="hdr-run-sub"><span class="hdr-persona">' + esc(persona) + '</span><span class="dot-sep"></span>'
