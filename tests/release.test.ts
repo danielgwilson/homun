@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
@@ -114,10 +115,28 @@ describe("release readiness", () => {
   });
 
   it("ships the Observer hero asset in the npm payload", async () => {
-    const screenshot = await stat("docs/assets/humanish-observer-hero.png");
+    const screenshotPath = "docs/assets/humanish-observer-hero.png";
+    const screenshot = await stat(screenshotPath);
+    const inventory = JSON.parse(execFileSync(
+      "npm",
+      ["pack", "--dry-run", "--json", "--ignore-scripts"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        maxBuffer: 5 * 1024 * 1024,
+        timeout: 30_000
+      }
+    )) as Array<{ files?: Array<{ path?: string; size?: number }> }>;
 
-    expect(screenshot.size).toBeGreaterThan(50_000);
-  });
+    expect(inventory).toHaveLength(1);
+    const packedScreenshot = inventory[0]?.files?.find((file) => file.path === screenshotPath);
+    if (!packedScreenshot) {
+      throw new Error(`npm pack inventory omitted ${screenshotPath}`);
+    }
+
+    expect(packedScreenshot.size).toBe(screenshot.size);
+    expect(packedScreenshot.size).toBeGreaterThan(50_000);
+  }, 45_000);
 
   it("defines tag-gated npm trusted publishing", async () => {
     const publish = await readFile(".github/workflows/publish.yml", "utf8");
