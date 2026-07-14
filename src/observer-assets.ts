@@ -1325,7 +1325,8 @@ export function observerClientJs(): string {
     return artifactPath ? ("../" + raw) : raw;
   }
   function runArtifactHref(v) {
-    var raw = String(v == null ? "" : v).trim();
+    if (typeof v !== "string") return "";
+    var raw = v.trim();
     var low = raw.toLowerCase();
     if (!raw) return "";
     if (low.indexOf("http://") === 0 || low.indexOf("https://") === 0 || low.indexOf("file:") === 0) return raw;

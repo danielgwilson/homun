@@ -637,6 +637,34 @@ describe("observer rendering", () => {
     expect(client.html()).toContain("Static file view cannot hydrate artifacts inline");
   });
 
+  it("ignores non-string screenshot placeholders while preserving valid screenshot paths", () => {
+    const data = browserLabObserverData();
+    const stream = (data.streams as Array<Record<string, unknown>>)[0]!;
+    stream.url = undefined;
+    stream.embed = { kind: "iframe", url: false };
+    stream.ui = {
+      route: "placeholder://browser-lane",
+      screenshotUrl: false
+    };
+    stream.artifacts = [];
+
+    const placeholderClient = renderObserverClientForTest(data);
+
+    expect(placeholderClient.html()).not.toContain('src="../false"');
+    expect(placeholderClient.html()).not.toContain('alt="viewport screenshot"');
+    expect(placeholderClient.html()).toContain("placeholder://browser-lane");
+
+    stream.ui = {
+      route: "placeholder://browser-lane",
+      screenshotUrl: "screenshots/synthetic-browser.png"
+    };
+
+    const screenshotClient = renderObserverClientForTest(data);
+
+    expect(screenshotClient.html()).toContain('src="../screenshots/synthetic-browser.png"');
+    expect(screenshotClient.html()).toContain('alt="viewport screenshot"');
+  });
+
   it("renders generic lane grouping metadata in the toolbar", () => {
     const client = renderObserverClientForTest({
       ...browserLabObserverData(),
