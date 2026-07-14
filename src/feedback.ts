@@ -287,6 +287,7 @@ async function resolveFeedbackRunContext(cwd: string, runInput: string): Promise
     preparedRunPaths = await bindExistingRunArtifactPaths(physicalCwd, storedRunId);
     if (
       preparedRunPaths.physicalRunsRoot !== runsRoot.physicalPath
+      || preparedRunPaths.runsRootIdentity.birthtimeNs !== runsRoot.identity.birthtimeNs
       || preparedRunPaths.runsRootIdentity.dev !== runsRoot.identity.dev
       || preparedRunPaths.runsRootIdentity.ino !== runsRoot.identity.ino
     ) {

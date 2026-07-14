@@ -20,6 +20,7 @@ export interface PreparedRunArtifactPaths extends RunArtifactPaths {
 }
 
 interface FileIdentity {
+  readonly birthtimeNs: bigint;
   readonly dev: bigint;
   readonly ino: bigint;
 }
@@ -420,8 +421,8 @@ async function capturePreparedRunArtifactPaths(
     physicalLatestPointer: path.join(physicalRunsRoot, "latest.json"),
     physicalRunRoot,
     physicalRunsRoot,
-    runRootIdentity: Object.freeze({ dev: runStats.dev, ino: runStats.ino }),
-    runsRootIdentity: Object.freeze({ dev: runsStats.dev, ino: runsStats.ino })
+    runRootIdentity: Object.freeze({ birthtimeNs: runStats.birthtimeNs, dev: runStats.dev, ino: runStats.ino }),
+    runsRootIdentity: Object.freeze({ birthtimeNs: runsStats.birthtimeNs, dev: runsStats.dev, ino: runsStats.ino })
   });
 }
 
@@ -430,6 +431,7 @@ async function assertDirectoryIdentity(directory: string, identity: FileIdentity
   if (
     stats.isSymbolicLink()
     || !stats.isDirectory()
+    || stats.birthtimeNs !== identity.birthtimeNs
     || stats.dev !== identity.dev
     || stats.ino !== identity.ino
     || await realpath(directory) !== directory

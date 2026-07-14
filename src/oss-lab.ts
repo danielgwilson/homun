@@ -229,7 +229,7 @@ async function pinOssLabDirectory(directoryInput: string): Promise<PreparedSelec
     throw new Error("OSS lab managed roots must be physical directories.");
   }
   return Object.freeze({
-    identity: Object.freeze({ dev: stats.dev, ino: stats.ino }),
+    identity: Object.freeze({ birthtimeNs: stats.birthtimeNs, dev: stats.dev, ino: stats.ino }),
     physicalPath,
     requestedPath: physicalPath
   });

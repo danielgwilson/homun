@@ -357,6 +357,7 @@ interface OssMetaLabOutcome {
 }
 
 interface PinnedCleanupDirectory {
+  readonly birthtimeNs: bigint;
   readonly dev: bigint;
   readonly ino: bigint;
   readonly physicalPath: string;
@@ -546,13 +547,14 @@ async function pinCleanupDirectory(directoryInput: string): Promise<PinnedCleanu
   if (stats.isSymbolicLink() || !stats.isDirectory()) {
     throw new Error("OSS meta-lab cleanup roots must be physical directories.");
   }
-  return Object.freeze({ dev: stats.dev, ino: stats.ino, physicalPath });
+  return Object.freeze({ birthtimeNs: stats.birthtimeNs, dev: stats.dev, ino: stats.ino, physicalPath });
 }
 
 async function validatePinnedCleanupDirectory(directory: PinnedCleanupDirectory): Promise<boolean> {
   const stats = await lstat(directory.physicalPath, { bigint: true });
   return !stats.isSymbolicLink()
     && stats.isDirectory()
+    && stats.birthtimeNs === directory.birthtimeNs
     && stats.dev === directory.dev
     && stats.ino === directory.ino
     && await realpath(directory.physicalPath) === directory.physicalPath;

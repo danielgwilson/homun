@@ -77,6 +77,7 @@ type ManifestReadResult =
   | { status: "ok"; contents: string };
 
 interface ManagedDirectoryBinding {
+  birthtimeNs: bigint;
   dev: bigint;
   ino: bigint;
   physicalPath: string;
@@ -394,6 +395,7 @@ async function bindManagedDirectory(
   return {
     status: "ok",
     binding: {
+      birthtimeNs: inspected.birthtimeNs,
       dev: inspected.dev,
       ino: inspected.ino,
       physicalPath: inspected.physicalPath
@@ -408,7 +410,7 @@ async function inspectManagedPath(
 ): Promise<
   | { status: "missing" }
   | { status: "unsafe"; message: string }
-  | { status: "ok"; dev: bigint; ino: bigint; physicalPath: string }
+  | { status: "ok"; birthtimeNs: bigint; dev: bigint; ino: bigint; physicalPath: string }
 > {
   try {
     await assertPreparedSelectedOutputDirectory(projectRoot);
@@ -441,7 +443,13 @@ async function inspectManagedPath(
       }
       if (leaf) {
         await assertPreparedSelectedOutputDirectory(projectRoot);
-        return { status: "ok", dev: stats.dev, ino: stats.ino, physicalPath: current };
+        return {
+          status: "ok",
+          birthtimeNs: stats.birthtimeNs,
+          dev: stats.dev,
+          ino: stats.ino,
+          physicalPath: current
+        };
       }
     }
   } catch {
@@ -460,6 +468,7 @@ async function assertManagedDirectoryBinding(
   if (
     current.status !== "ok"
     || current.physicalPath !== binding.physicalPath
+    || current.birthtimeNs !== binding.birthtimeNs
     || current.dev !== binding.dev
     || current.ino !== binding.ino
   ) {

@@ -64,6 +64,7 @@ export interface ObserverStaticServer {
 }
 
 interface PinnedStaticRoot {
+  readonly birthtimeNs: bigint;
   readonly dev: bigint;
   readonly ino: bigint;
   readonly physicalPath: string;
@@ -337,7 +338,7 @@ async function pinStaticRoot(rootInput: string): Promise<PinnedStaticRoot> {
   if (stats.isSymbolicLink() || !stats.isDirectory()) {
     throw new Error("Observer static roots must be physical directories.");
   }
-  return Object.freeze({ dev: stats.dev, ino: stats.ino, physicalPath });
+  return Object.freeze({ birthtimeNs: stats.birthtimeNs, dev: stats.dev, ino: stats.ino, physicalPath });
 }
 
 async function assertPinnedStaticRoot(root: PinnedStaticRoot): Promise<void> {
@@ -345,6 +346,7 @@ async function assertPinnedStaticRoot(root: PinnedStaticRoot): Promise<void> {
   if (
     stats.isSymbolicLink()
     || !stats.isDirectory()
+    || stats.birthtimeNs !== root.birthtimeNs
     || stats.dev !== root.dev
     || stats.ino !== root.ino
     || await realpath(root.physicalPath) !== root.physicalPath

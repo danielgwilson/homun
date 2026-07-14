@@ -66,6 +66,7 @@ export interface ObserverRuntimeStreamUrl {
 }
 
 interface PinnedDirectory {
+  readonly birthtimeNs: bigint;
   readonly dev: bigint;
   readonly ino: bigint;
   readonly physicalPath: string;
@@ -107,8 +108,10 @@ export async function renderObserver(
     if (
       preparedRunPaths.physicalRunsRoot !== selection.runsRoot.physicalPath
       || preparedRunPaths.physicalRunRoot !== selection.runRoot.physicalPath
+      || preparedRunPaths.runsRootIdentity.birthtimeNs !== selection.runsRoot.birthtimeNs
       || preparedRunPaths.runsRootIdentity.dev !== selection.runsRoot.dev
       || preparedRunPaths.runsRootIdentity.ino !== selection.runsRoot.ino
+      || preparedRunPaths.runRootIdentity.birthtimeNs !== selection.runRoot.birthtimeNs
       || preparedRunPaths.runRootIdentity.dev !== selection.runRoot.dev
       || preparedRunPaths.runRootIdentity.ino !== selection.runRoot.ino
     ) {
@@ -571,7 +574,7 @@ async function pinDirectory(directoryInput: string): Promise<PinnedDirectory> {
   if (stats.isSymbolicLink() || !stats.isDirectory()) {
     throw new Error("Observer roots must be physical directories.");
   }
-  return Object.freeze({ dev: stats.dev, ino: stats.ino, physicalPath });
+  return Object.freeze({ birthtimeNs: stats.birthtimeNs, dev: stats.dev, ino: stats.ino, physicalPath });
 }
 
 async function pinDirectChildDirectory(root: PinnedDirectory, name: string): Promise<PinnedDirectory | null> {
@@ -595,6 +598,7 @@ async function assertPinnedDirectory(root: PinnedDirectory): Promise<void> {
   if (
     stats.isSymbolicLink()
     || !stats.isDirectory()
+    || stats.birthtimeNs !== root.birthtimeNs
     || stats.dev !== root.dev
     || stats.ino !== root.ino
     || await realpath(root.physicalPath) !== root.physicalPath

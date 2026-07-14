@@ -13,6 +13,7 @@ import {
 } from "./run-paths.js";
 
 interface FileIdentity {
+  readonly birthtimeNs: bigint;
   readonly dev: bigint;
   readonly ino: bigint;
 }
@@ -409,7 +410,7 @@ async function captureDirectoryIdentity(directory: string): Promise<FileIdentity
   if (stats.isSymbolicLink() || !stats.isDirectory() || await realpath(directory) !== directory) {
     throw new Error("Prepared output root must use a physical directory.");
   }
-  return Object.freeze({ dev: stats.dev, ino: stats.ino });
+  return Object.freeze({ birthtimeNs: stats.birthtimeNs, dev: stats.dev, ino: stats.ino });
 }
 
 async function assertDirectoryIdentity(
@@ -421,6 +422,7 @@ async function assertDirectoryIdentity(
   if (
     stats.isSymbolicLink()
     || !stats.isDirectory()
+    || stats.birthtimeNs !== identity.birthtimeNs
     || stats.dev !== identity.dev
     || stats.ino !== identity.ino
     || await realpath(directory) !== directory
